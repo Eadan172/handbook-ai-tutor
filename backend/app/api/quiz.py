@@ -56,7 +56,10 @@ async def api_generate_quiz(
     user: User = Depends(get_current_user),
 ) -> QuizOut:
     await _owned_source(db, source_id, user.id)
-    quiz = await generate_quiz(db, source_id=source_id, user_id=user.id, router=ModelRouter(db))
+    try:
+        quiz = await generate_quiz(db, source_id=source_id, user_id=user.id, router=ModelRouter(db))
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     questions = (
         (await db.execute(select(QuizQuestion).where(QuizQuestion.quiz_id == quiz.id).order_by(QuizQuestion.ordinal)))
         .scalars()

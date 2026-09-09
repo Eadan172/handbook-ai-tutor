@@ -4,9 +4,13 @@
 from __future__ import annotations
 
 import subprocess
+import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "backend"))
+from app.utils.sample_pdf import make_text_pdf  # noqa: E402
+
 SAMPLES = ROOT / "samples"
 SAMPLES.mkdir(exist_ok=True)
 
@@ -19,22 +23,8 @@ PDF_TEXT = (
 
 
 def write_pdf() -> Path:
-    safe = PDF_TEXT[:180]
-    stream = f"BT /F1 12 Tf 72 720 Td ({safe}) Tj ET\n"
-    length = len(stream.encode("ascii"))
-    pdf = f"""%PDF-1.4
-1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj
-2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj
-3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >> endobj
-4 0 obj << /Length {length} >> stream
-{stream}endstream
-endobj
-5 0 obj << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> endobj
-trailer << /Size 6 /Root 1 0 R >>
-%%EOF
-"""
     path = SAMPLES / "photosynthesis.pdf"
-    path.write_bytes(pdf.encode("latin-1"))
+    path.write_bytes(make_text_pdf(PDF_TEXT, title="Photosynthesis"))
     return path
 
 
