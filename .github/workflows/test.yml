@@ -1,0 +1,27 @@
+name: tests
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  backend-smoke:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install ffmpeg
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+      - name: Install backend
+        run: pip install -e ".[dev]"
+      - name: Smoke tests (MockLLM only)
+        env:
+          LLM_DEFAULT_PROVIDER: mock
+          TASK_BACKEND: inline
+          STORAGE_BACKEND: local
+        run: pytest -q tests/test_auth.py tests/test_upload.py tests/test_rag.py tests/test_quiz.py tests/test_llm_mock.py

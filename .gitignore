@@ -1,0 +1,52 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+dist/
+build/
+
+# Node
+node_modules/
+frontend/.next/
+frontend/out/
+frontend/coverage/
+npm-debug.log*
+.next/
+
+# Env & secrets
+.env
+.env.local
+.env.*.local
+!.env.example
+*.pem
+
+# Data / runtime
+data/
+.tmp/
+*.db
+*.sqlite
+uploads/
+storage/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# OS
+.DS_Store
+
+# Samples generated locally
+samples/*.mp4
+samples/*.pdf
+!samples/.gitkeep
+
+# Alembic
+# keep versions
