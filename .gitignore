@@ -30,6 +30,7 @@ npm-debug.log*
 # Data / runtime
 data/
 .tmp/
+tmp/
 *.db
 *.sqlite
 uploads/
