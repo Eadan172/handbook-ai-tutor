@@ -21,23 +21,51 @@ class StorageProvider(ABC):
     async def ensure_ready(self) -> None:
         raise NotImplementedError
 
+    @abstractmethod
+    async def delete_bytes(self, key: str) -> bool:
+        """Remove one stored object. Returns True when something was removed."""
+        raise NotImplementedError
+
 
 class LocalStorage(StorageProvider):
     def __init__(self, root: str | None = None) -> None:
-        self.root = Path(root or get_settings().local_storage_path)
+        self.root = Path(root or get_settings().local_storage_path).resolve()
         self.root.mkdir(parents=True, exist_ok=True)
 
     async def ensure_ready(self) -> None:
         self.root.mkdir(parents=True, exist_ok=True)
 
+    def _resolve(self, key: str) -> Path:
+        """Resolve `key` inside the storage root, refusing traversal escapes."""
+        candidate = (self.root / key).resolve()
+        if candidate != self.root and self.root not in candidate.parents:
+            raise ValueError(f"Refusing to touch a path outside the storage root: {key!r}")
+        return candidate
+
     async def put_bytes(self, key: str, data: bytes, content_type: str) -> str:
-        path = self.root / key
+        path = self._resolve(key)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(data)
         return str(path)
 
     async def get_bytes(self, key: str) -> bytes:
-        return (self.root / key).read_bytes()
+        return self._resolve(key).read_bytes()
+
+    async def delete_bytes(self, key: str) -> bool:
+        path = self._resolve(key)
+        if not path.exists():
+            return False
+        path.unlink()
+        # Prune now-empty parent folders (e.g. <root>/<user_id>/<source_id>/)
+        # but never the storage root itself.
+        parent = path.parent
+        while parent != self.root and self.root in parent.parents:
+            try:
+                parent.rmdir()
+            except OSError:
+                break  # not empty -> stop
+            parent = parent.parent
+        return True
 
 
 class MinioStorage(StorageProvider):
@@ -90,6 +118,21 @@ class MinioStorage(StorageProvider):
                 resp.release_conn()
 
         return await to_thread(_get)
+
+    async def delete_bytes(self, key: str) -> bool:
+        from asyncio import to_thread
+
+        def _delete() -> bool:
+            from minio.deleteobjects import DeleteObject
+            from minio.error import S3Error
+
+            try:
+                errors = list(self.client.remove_objects(self.bucket, [DeleteObject(key)]))
+            except S3Error:
+                return False
+            return not errors
+
+        return await to_thread(_delete)
 
 
 _storage: StorageProvider | None = None

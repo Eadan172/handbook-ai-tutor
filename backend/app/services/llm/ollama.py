@@ -6,6 +6,15 @@ from app.core.config import get_settings
 from app.services.llm.base import ChatMessage, EmbedResult, LLMProvider, LLMResult
 
 
+def _ollama_message(message: ChatMessage) -> dict:
+    """Ollama keeps text in `content` and raw base64 images in a sibling `images` list."""
+    payload: dict = {"role": message.role, "content": message.text()}
+    images = [part.base64_payload for part in message.images()]
+    if images:
+        payload["images"] = images
+    return payload
+
+
 class OllamaProvider(LLMProvider):
     """Optional local Ollama HTTP API. Disabled unless selected in providers.yaml."""
 
@@ -28,7 +37,7 @@ class OllamaProvider(LLMProvider):
         model = self._model_for(task)
         payload = {
             "model": model,
-            "messages": [{"role": m.role, "content": m.content} for m in messages],
+            "messages": [_ollama_message(m) for m in messages],
             "stream": False,
             "format": "json" if json_mode else None,
         }

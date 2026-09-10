@@ -18,7 +18,7 @@ Then open:
 - API: http://localhost:8000/docs
 - MinIO console: http://localhost:9001 (`minioadmin` / `minioadmin`)
 
-Register in the UI → upload `samples/` (or any PDF / short MP4) → wait until status is `ready` → open Summary, Tutor, and Quiz.
+Register in the UI → upload any PDF / short MP4 → wait until status is `ready` → open Summary, Tutor, and Quiz.
 
 Optional reverse proxy: `docker compose --profile with-nginx up --build` then http://localhost:8080
 
@@ -54,7 +54,7 @@ export NEXT_PUBLIC_API_BASE_URL=http://localhost:8000
 npm run dev
 ```
 
-Generate demo files:
+Generate demo files (writes to `test-outputs/inputs/`):
 
 ```bash
 python scripts/generate_samples.py
@@ -97,6 +97,29 @@ Optional local models: `OLLAMA_BASE_URL=http://127.0.0.1:11434` and `task_routes
 
 Optional real STT: `STT_PROVIDER=faster_whisper` and `pip install -e "./backend[stt]"` (needs CPU/GPU weights; MockSTT is the default).
 
+### Local video pipeline (ffmpeg + faster-whisper, offline)
+
+The mp4 pipeline extracts audio with **ffmpeg** and transcribes locally with
+**faster-whisper** — no API key, audio never leaves the machine.
+
+1. **ffmpeg** — download a Windows static build and place it at
+   `tools/ffmpeg/bin/ffmpeg.exe` (the `tools/` dir is git-ignored). Both
+   `start.bat` and `scripts/run_local_*.sh` auto-inject it into `PATH`.
+   Linux/macOS: just install ffmpeg via your package manager.
+2. **Model weights** — set `STT_WHISPER_MODEL=base|small` in `.env`. If
+   HuggingFace is unreachable, download from ModelScope into
+   `tools/whisper-<size>/` (`model.bin`, `config.json`, `tokenizer.json`,
+   `vocabulary.txt`); the STT layer picks the local dir up automatically.
+   `base` ≈ 145 MB and runs fine on ~4 GB free RAM; `small` ≈ 484 MB, better
+   Chinese quality, needs more memory. Long videos are transcribed in
+   5-minute chunks to cap peak memory.
+3. `.env`: `STT_PROVIDER=faster_whisper`, `STT_WHISPER_VAD=true` (skips
+   silence between sentences in lectures).
+
+Mixed-language lectures (e.g. Chinese teaching with French/English read-aloud)
+work out of the box — Whisper auto-detects language per segment, no fine-tuning
+needed.
+
 ## Smoke tests
 
 ```bash
@@ -106,6 +129,19 @@ LLM_DEFAULT_PROVIDER=mock TASK_BACKEND=inline STORAGE_BACKEND=local \
 ```
 
 These cover: JWT register/login, upload enqueue + PDF pipeline, RAG retrieve (mock embeddings), quiz generate/attempt (MockLLM). No vendor APIs are called.
+
+## End-to-end acceptance (real LLM + real STT)
+
+`scripts/e2e_acceptance.py` uploads a PDF and an MP4, waits for ingest, then
+collects summary / knowledge points / AI notes / a tutor Q&A
+("这个资料主要讲了什么") / a quiz submitted with all-C answers plus full
+explanations into `test-outputs/<kind>/` (git-ignored — LLM output about your
+own materials stays local):
+
+```bash
+# backend must be running:  bash scripts/run_local_backend.sh
+./.venv/Scripts/python.exe scripts/e2e_acceptance.py
+```
 
 ## Layout
 

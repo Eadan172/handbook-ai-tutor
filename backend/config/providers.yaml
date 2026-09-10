@@ -5,16 +5,32 @@
 # China-first defaults (DashScope / DeepSeek / SiliconFlow). Overseas vendors
 # (OpenAI, Anthropic) honor HTTP_PROXY / HTTPS_PROXY from the process environment.
 # Do not hardcode a proxy URL.
+#
+# ---------------------------------------------------------------------------
+# WHICH PROVIDER GETS USED
+# Resolved per task, first hit wins:
+#   1. env LLM_TASK_ROUTES      (JSON map, e.g. {"tutor":"deepseek"})
+#   2. env LLM_PROVIDER_TEXT    for summarize / extract_knowledge / quiz_generate /
+#                               quiz_explain / tutor / notes_generate
+#      env LLM_PROVIDER_AUDIO   for segment_summarize (video / speech)
+#      env LLM_PROVIDER_EMBED   for embed
+#      env LLM_PROVIDER_VISION  for transcribe_image (reading images / scanned PDFs)
+#   3. env LLM_DEFAULT_PROVIDER
+#   4. default_provider below
+#   5. "mock"
+#
+# A provider participates in OCR only when it declares a `transcribe_image` model
+# below. DeepSeek has no vision model, so it is intentionally absent there and a
+# vision task will never be routed to it.
+#
+# `task_routes` below is intentionally EMPTY. Anything listed here overrides all
+# env vars — which used to pin every task to mock and silently ignore API keys.
+# Only add an entry when you want one task pinned to one vendor for good.
+# ---------------------------------------------------------------------------
 
 default_provider: mock
 
-task_routes:
-  summarize: mock
-  extract_knowledge: mock
-  quiz_generate: mock
-  tutor: mock
-  segment_summarize: mock
-  embed: mock
+task_routes: {}
 
 providers:
   mock:
@@ -32,9 +48,12 @@ providers:
       summarize: qwen-plus
       extract_knowledge: qwen-plus
       quiz_generate: qwen-plus
+      quiz_explain: qwen-plus
+      notes_generate: qwen-plus
       tutor: qwen-plus
       segment_summarize: qwen-turbo
       embed: text-embedding-v3
+      transcribe_image: qwen-vl-max
 
   deepseek:
     type: openai_compatible
@@ -44,6 +63,11 @@ providers:
       default: deepseek-chat
       tutor: deepseek-chat
       summarize: deepseek-chat
+      extract_knowledge: deepseek-chat
+      quiz_generate: deepseek-chat
+      quiz_explain: deepseek-chat
+      notes_generate: deepseek-chat
+      segment_summarize: deepseek-chat
 
   siliconflow:
     type: openai_compatible
@@ -51,7 +75,15 @@ providers:
     api_key_env: SILICONFLOW_API_KEY
     models:
       default: Qwen/Qwen2.5-7B-Instruct
+      tutor: deepseek-ai/DeepSeek-V3
+      summarize: Qwen/Qwen2.5-7B-Instruct
+      extract_knowledge: Qwen/Qwen2.5-7B-Instruct
+      quiz_generate: Qwen/Qwen2.5-7B-Instruct
+      quiz_explain: Qwen/Qwen2.5-7B-Instruct
+      notes_generate: Qwen/Qwen2.5-7B-Instruct
+      segment_summarize: Qwen/Qwen2.5-7B-Instruct
       embed: BAAI/bge-m3
+      transcribe_image: Qwen/Qwen2.5-VL-72B-Instruct
 
   openai:
     type: openai_compatible
@@ -60,6 +92,7 @@ providers:
     models:
       default: gpt-4o-mini
       embed: text-embedding-3-small
+      transcribe_image: gpt-4o-mini
 
   anthropic:
     type: anthropic
@@ -67,6 +100,7 @@ providers:
     api_key_env: ANTHROPIC_API_KEY
     models:
       default: claude-3-5-haiku-latest
+      transcribe_image: claude-3-5-sonnet-latest
 
   ollama:
     type: ollama
@@ -75,6 +109,7 @@ providers:
     models:
       default: llama3.2
       embed: nomic-embed-text
+      transcribe_image: llava
 
   openai_compat:
     type: openai_compatible

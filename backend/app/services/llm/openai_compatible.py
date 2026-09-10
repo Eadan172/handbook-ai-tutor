@@ -5,7 +5,36 @@ import os
 import httpx
 
 from app.core.config import get_settings
-from app.services.llm.base import ChatMessage, EmbedResult, LLMProvider, LLMResult
+from app.services.llm.base import (
+    ChatMessage,
+    EmbedResult,
+    ImagePart,
+    LLMProvider,
+    LLMResult,
+    TextPart,
+)
+
+
+def _content_parts(content) -> str | list[dict]:
+    """Render one message body in OpenAI chat-completions format.
+
+    Multimodal messages become the `[{type: text}, {type: image_url}]` array that
+    every OpenAI-compatible vendor (DashScope, SiliconFlow, OpenAI, …) accepts.
+    """
+    if isinstance(content, str):
+        return content
+    parts: list[dict] = []
+    for part in content:
+        if isinstance(part, TextPart):
+            parts.append({"type": "text", "text": part.text})
+        elif isinstance(part, ImagePart):
+            parts.append(
+                {
+                    "type": "image_url",
+                    "image_url": {"url": part.data_url, "detail": part.detail},
+                }
+            )
+    return parts or ""
 
 
 class OpenAICompatibleProvider(LLMProvider):
@@ -46,7 +75,7 @@ class OpenAICompatibleProvider(LLMProvider):
         model = self._model_for(task)
         payload: dict = {
             "model": model,
-            "messages": [{"role": m.role, "content": m.content} for m in messages],
+            "messages": [{"role": m.role, "content": _content_parts(m.content)} for m in messages],
         }
         if json_mode:
             payload["response_format"] = {"type": "json_object"}
@@ -59,7 +88,15 @@ class OpenAICompatibleProvider(LLMProvider):
             )
             resp.raise_for_status()
             data = resp.json()
-        choice = data["choices"][0]["message"]["content"] or ""
+        # Most vendors return a plain string, but some vision models reply with a
+        # content array. Accept both so an OCR call never dies on shape.
+        raw = ((data.get("choices") or [{}])[0].get("message") or {}).get("content")
+        if isinstance(raw, list):
+            choice = "".join(
+                p.get("text", "") for p in raw if isinstance(p, dict) and p.get("type") == "text"
+            )
+        else:
+            choice = raw or ""
         usage = data.get("usage") or {}
         return LLMResult(
             content=choice,

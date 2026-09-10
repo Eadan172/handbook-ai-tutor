@@ -56,7 +56,13 @@ class ProgressService:
         try:
             import redis.asyncio as redis
 
-            client = redis.from_url(self.settings.redis_url)
+            # Short timeouts: without Redis (docker-less dev) the default connect
+            # timeout makes every progress update block for seconds on Windows.
+            client = redis.from_url(
+                self.settings.redis_url,
+                socket_connect_timeout=0.3,
+                socket_timeout=0.5,
+            )
             await client.set(f"task:{task.id}:progress", payload, ex=3600)
             await client.publish(f"task:{task.id}", payload)
             await client.aclose()

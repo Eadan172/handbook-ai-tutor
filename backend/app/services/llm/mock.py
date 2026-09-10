@@ -6,7 +6,7 @@ import math
 import re
 
 from app.core.config import get_settings
-from app.services.llm.base import ChatMessage, EmbedResult, LLMProvider, LLMResult
+from app.services.llm.base import ChatMessage, EmbedResult, LLMProvider, LLMResult, message_text
 
 
 def _tokens(text: str) -> int:
@@ -36,6 +36,9 @@ class MockProvider(LLMProvider):
         self.embed_model = embed_model
         self.dim = get_settings().embedding_dim
 
+    def model_for(self, task: str) -> str:
+        return self.embed_model if task == "embed" else self.model
+
     async def complete(
         self,
         *,
@@ -43,9 +46,9 @@ class MockProvider(LLMProvider):
         messages: list[ChatMessage],
         json_mode: bool = False,
     ) -> LLMResult:
-        user = next((m.content for m in reversed(messages) if m.role == "user"), "")
-        content = self._content_for_task(task, user)
-        prompt = "\n".join(m.content for m in messages)
+        user = next((m.text() for m in reversed(messages) if m.role == "user"), "")
+        content = self._content_for_task(task, user, messages)
+        prompt = message_text(messages)
         return LLMResult(
             content=content,
             prompt_tokens=_tokens(prompt),
@@ -64,11 +67,29 @@ class MockProvider(LLMProvider):
             dim=self.dim,
         )
 
-    def _content_for_task(self, task: str, user: str) -> str:
+    def _content_for_task(self, task: str, user: str, messages: list[ChatMessage] | None = None) -> str:
         ids = re.findall(r"chunk_id=([0-9a-f-]{36})", user, flags=re.I)
         first_ids = ids[:4] if ids else []
         snippet = user[:400].replace("\n", " ")
 
+        if task == "transcribe_image":
+            # Deliberately honest: the mock cannot read pixels. It emits a clearly
+            # labelled placeholder so the rest of the pipeline stays testable and
+            # nobody mistakes this for a real transcription.
+            images = [img for m in (messages or []) for img in m.images()]
+            return json.dumps(
+                {
+                    "text": (
+                        "[mock transcription] No real OCR ran. "
+                        f"{len(images)} image(s) received. "
+                        "Configure OCR_PROVIDER=rapidocr for offline OCR, or put a "
+                        "vision-capable API key in .env (e.g. DASHSCOPE_API_KEY) and set "
+                        "LLM_PROVIDER_VISION=dashscope."
+                    ),
+                    "language": "unknown",
+                    "is_mock": True,
+                }
+            )
         if task == "summarize":
             return json.dumps(
                 {
@@ -94,23 +115,81 @@ class MockProvider(LLMProvider):
                 )
             return json.dumps({"points": points})
         if task == "quiz_generate":
+            # v2 shape: sections + mixed question types
             questions = []
-            for i in range(4):
-                questions.append(
+            plan = [
+                ("Section 1 — Overview", "choice"),
+                ("Section 1 — Overview", "choice"),
+                ("Section 2 — Key ideas", "choice"),
+                ("Section 2 — Key ideas", "translation"),
+                ("Section 3 — Practice", "writing"),
+                ("Section 3 — Practice", "speaking"),
+            ]
+            for i, (section, qtype) in enumerate(plan):
+                row = {
+                    "section_title": section,
+                    "question_type": qtype,
+                    "question": f"Mock question {i + 1}: what is a main idea in this source?",
+                    "options": [
+                        "A concept grounded in the uploaded material",
+                        "An unrelated historical date",
+                        "A random programming trivia fact",
+                        "None of the source content",
+                    ]
+                    if qtype == "choice"
+                    else [],
+                    "correct_index": 0,
+                    "reference_answer": "The mock reference answer is grounded in the uploaded material.",
+                    "rubric": "Must refer to the uploaded material.",
+                    "instructions": "Pick one option." if qtype == "choice" else "Type your answer below.",
+                    "explanation": "The mock quiz always treats option A as grounded in the source.",
+                    "chunk_ids": first_ids[:1],
+                }
+                if qtype == "translation":
+                    row["question"] = "Translate this sentence into your target language: 'The Calvin cycle fixes carbon into sugars.'"
+                    row["instructions"] = "Type your translation."
+                elif qtype == "writing":
+                    row["question"] = "Write a short paragraph (80-120 words) explaining the main process in this source."
+                    row["instructions"] = "Type your paragraph."
+                elif qtype == "speaking":
+                    row["question"] = "Say aloud a 30-second explanation of this source, then type what you said."
+                    row["instructions"] = "Type the script of what you would say."
+                questions.append(row)
+            return json.dumps({"title": "Practice quiz (mock)", "questions": questions})
+        if task == "quiz_explain":
+            # Echo one verdict per question so the marking pass always completes.
+            ordinals = [int(x) for x in re.findall(r"ordinal=(\d+)", user)] or [0]
+            results = []
+            for ordinal in ordinals:
+                results.append(
                     {
-                        "question": f"Mock question {i + 1}: what is a main idea in this source?",
-                        "options": [
-                            "A concept grounded in the uploaded material",
-                            "An unrelated historical date",
-                            "A random programming trivia fact",
-                            "None of the source content",
-                        ],
-                        "correct_index": 0,
-                        "explanation": "The mock quiz always treats option A as grounded in the source.",
-                        "chunk_ids": first_ids[:1],
+                        "ordinal": ordinal,
+                        "verdict": "correct",
+                        "score": 1.0,
+                        "explanation": (
+                            f"Mock explanation for question {ordinal + 1}: the answer matches the "
+                            "reference grounded in the uploaded material."
+                        ),
                     }
                 )
-            return json.dumps({"title": "Practice quiz (mock)", "questions": questions})
+            return json.dumps({"results": results})
+        if task == "notes_generate":
+            return json.dumps(
+                {
+                    "notes": [
+                        {
+                            "title": "Mock study note",
+                            "anchor": "p.1",
+                            "content": (
+                                "Key ideas (mock)\n\n"
+                                f"- {snippet[:160] or 'The source discusses the uploaded material.'}\n"
+                                "- Review the relationships between the core concepts.\n\n"
+                                "Self-check: can you explain the main process in your own words?"
+                            ),
+                        }
+                    ]
+                }
+            )
         if task == "segment_summarize":
             return json.dumps(
                 {

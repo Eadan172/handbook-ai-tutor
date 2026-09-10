@@ -2,6 +2,7 @@ from app.models.base import Base
 from app.models.chunk import DocumentChunk
 from app.models.course import Course
 from app.models.knowledge import KnowledgePoint, SourceSummary
+from app.models.note import SourceNote
 from app.models.quiz import Quiz, QuizAttempt, QuizQuestion
 from app.models.source import Source
 from app.models.task import Task
@@ -18,6 +19,7 @@ __all__ = [
     "DocumentChunk",
     "SourceSummary",
     "KnowledgePoint",
+    "SourceNote",
     "Quiz",
     "QuizQuestion",
     "QuizAttempt",

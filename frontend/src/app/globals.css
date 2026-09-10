@@ -2,32 +2,287 @@
 @tailwind components;
 @tailwind utilities;
 
+/* =================================================================
+   Design tokens — 整套界面唯一可改的"原子"
+   颜色用 HSL 以兼容 Tailwind 的 `hsl(var(--token))` 解析方式。
+   数值按 Tailwind 默认的色阶（50/100/.../950）切分，保持一致。
+   ================================================================= */
 @layer base {
   :root {
-    --background: 40 33% 98%;
-    --foreground: 222 47% 11%;
+    /* —— 中性 / 表面 —— */
+    --background: 40 33% 97%;
+    --foreground: 220 28% 12%;
+
     --card: 0 0% 100%;
-    --card-foreground: 222 47% 11%;
-    --primary: 162 47% 28%;
+    --card-foreground: 220 28% 12%;
+
+    --popover: 0 0% 100%;
+    --popover-foreground: 220 28% 12%;
+
+    /* —— 品牌主色（emerald-teal 渐变） —— */
+    --primary: 166 72% 32%;
     --primary-foreground: 0 0% 100%;
-    --secondary: 40 20% 94%;
-    --secondary-foreground: 222 47% 11%;
-    --muted: 40 15% 94%;
-    --muted-foreground: 220 9% 40%;
-    --accent: 162 30% 92%;
-    --accent-foreground: 162 47% 20%;
-    --destructive: 0 72% 51%;
+
+    /* —— 次级 / 衬色 —— */
+    --secondary: 40 25% 94%;
+    --secondary-foreground: 220 28% 18%;
+
+    /* —— 弱化文本 / 占位 —— */
+    --muted: 40 18% 93%;
+    --muted-foreground: 220 10% 42%;
+
+    /* —— 强调色（暖琥珀，用于高亮/链接 hover） —— */
+    --accent: 36 92% 54%;
+    --accent-foreground: 30 80% 16%;
+
+    /* —— 语义色 —— */
+    --destructive: 0 78% 52%;
     --destructive-foreground: 0 0% 100%;
-    --border: 40 13% 87%;
-    --input: 40 13% 87%;
-    --ring: 162 47% 28%;
+    --success: 152 60% 36%;
+    --success-foreground: 0 0% 100%;
+    --warning: 36 92% 54%;
+    --warning-foreground: 30 80% 16%;
+    --info: 210 90% 52%;
+    --info-foreground: 0 0% 100%;
+
+    /* —— 边框 / 焦点环 —— */
+    --border: 40 14% 88%;
+    --input: 40 14% 88%;
+    --ring: 166 72% 32%;
+
+    /* —— 渐变停靠点（用于 hero / 装饰 / button 渐变） —— */
+    --gradient-from: 166 72% 32%;
+    --gradient-via: 178 60% 38%;
+    --gradient-to: 196 78% 44%;
+
+    /* —— 阴影（带品牌色染色） —— */
+    --shadow-soft: 0 1px 2px rgba(15, 23, 42, 0.04),
+      0 8px 24px -8px rgba(15, 23, 42, 0.08);
+    --shadow-lift: 0 4px 6px -1px rgba(15, 23, 42, 0.06),
+      0 20px 40px -12px rgba(15, 23, 42, 0.12);
+    --shadow-glow: 0 0 0 1px rgba(13, 148, 136, 0.12),
+      0 12px 32px -8px rgba(13, 148, 136, 0.2);
+
+    /* —— 圆角 —— */
+    --radius: 0.75rem;
   }
 
+  /* 全站基础 reset 与节奏 */
   * {
     @apply border-border;
   }
 
+  html {
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
+    scroll-behavior: smooth;
+  }
+
   body {
-    @apply bg-background text-foreground antialiased;
+    @apply bg-background text-foreground;
+    font-feature-settings: "rlig" 1, "calt" 1, "ss01" 1;
+    background-image:
+      radial-gradient(at 12% 0%, hsl(var(--gradient-from) / 0.08) 0px, transparent 50%),
+      radial-gradient(at 92% 0%, hsl(var(--gradient-to) / 0.06) 0px, transparent 50%),
+      radial-gradient(at 50% 100%, hsl(var(--accent) / 0.04) 0px, transparent 50%);
+    background-attachment: fixed;
+  }
+
+  /* 统一焦点环（仅键盘） */
+  :focus-visible {
+    @apply outline-none ring-2 ring-ring ring-offset-2 ring-offset-background;
+  }
+
+  /* 选区高亮 */
+  ::selection {
+    background-color: hsl(var(--primary) / 0.18);
+    color: hsl(var(--foreground));
+  }
+
+  /* 自定义滚动条（WebKit + Firefox） */
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  ::-webkit-scrollbar-track {
+    @apply bg-transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    @apply rounded-full bg-border;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    @apply bg-muted-foreground/40;
+  }
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: hsl(var(--border)) transparent;
+  }
+}
+
+/* =================================================================
+   Components — 跨页面复用的视觉构件
+   ================================================================= */
+@layer components {
+  /* 渐变描边卡片（hover 时从底部升起光带） */
+  .card-gradient {
+    background:
+      linear-gradient(hsl(var(--card)), hsl(var(--card))) padding-box,
+      linear-gradient(
+        135deg,
+        hsl(var(--gradient-from) / 0.5),
+        hsl(var(--gradient-via) / 0.5),
+        hsl(var(--gradient-to) / 0.5)
+      )
+      border-box;
+    border: 1px solid transparent;
+  }
+
+  /* 玻璃态（顶栏 / 浮层） */
+  .glass {
+    background: hsl(var(--card) / 0.78);
+    backdrop-filter: saturate(160%) blur(14px);
+    -webkit-backdrop-filter: saturate(160%) blur(14px);
+  }
+
+  /* 渐变文字（用于品牌字 / 数字） */
+  .text-gradient {
+    background: linear-gradient(
+      135deg,
+      hsl(var(--gradient-from)) 0%,
+      hsl(var(--gradient-via)) 50%,
+      hsl(var(--gradient-to)) 100%
+    );
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
+
+  /* 渐变背景（用于 hero / 装饰） */
+  .bg-gradient-brand {
+    background: linear-gradient(
+      135deg,
+      hsl(var(--gradient-from)) 0%,
+      hsl(var(--gradient-via)) 50%,
+      hsl(var(--gradient-to)) 100%
+    );
+  }
+
+  /* 渐变 hover 光晕（用于卡片 / 列表项） */
+  .hover-lift {
+    @apply transition-all duration-200;
+  }
+  .hover-lift:hover {
+    transform: translateY(-2px);
+    box-shadow: var(--shadow-lift);
+  }
+
+  /* 主操作按钮按压 */
+  .press {
+    @apply transition-transform duration-100 active:scale-[0.97];
+  }
+
+  /* 状态点（用于来源状态 / 任务状态） */
+  .status-dot {
+    @apply inline-block h-2 w-2 rounded-full;
+  }
+  .status-dot::after {
+    content: "";
+    @apply absolute inset-0 rounded-full;
+  }
+
+  /* 章节大纲（mono 字体的层级缩进） */
+  .outline-tree {
+    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  }
+}
+
+/* =================================================================
+   Utilities — 复用度高的原子样式
+   ================================================================= */
+@layer utilities {
+  /* 抑制图片 / 视频被主题色滤镜破坏 */
+  .color-preserve {
+    filter: none;
+  }
+
+  /* 让一个容器可滚动且在 iOS 上更顺 */
+  .scroll-smooth-x {
+    -webkit-overflow-scrolling: touch;
+  }
+}
+
+/* =================================================================
+   Animations
+   ================================================================= */
+@layer base {
+  @keyframes fade-in {
+    from { opacity: 0; }
+    to { opacity: 1; }
+  }
+  @keyframes fade-up {
+    from { opacity: 0; transform: translateY(8px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+  @keyframes fade-down {
+    from { opacity: 0; transform: translateY(-8px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+  @keyframes scale-in {
+    from { opacity: 0; transform: scale(0.96); }
+    to { opacity: 1; transform: scale(1); }
+  }
+  @keyframes shimmer {
+    0% { background-position: -200% 0; }
+    100% { background-position: 200% 0; }
+  }
+  @keyframes pulse-soft {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.6; }
+  }
+  @keyframes spin-slow {
+    to { transform: rotate(360deg); }
+  }
+  @keyframes gradient-pan {
+    0%, 100% { background-position: 0% 50%; }
+    50% { background-position: 100% 50%; }
+  }
+
+  .animate-fade-in { animation: fade-in 0.4s ease-out both; }
+  .animate-fade-up { animation: fade-up 0.5s cubic-bezier(0.16, 1, 0.3, 1) both; }
+  .animate-fade-down { animation: fade-down 0.4s ease-out both; }
+  .animate-scale-in { animation: scale-in 0.3s cubic-bezier(0.16, 1, 0.3, 1) both; }
+  .animate-pulse-soft { animation: pulse-soft 2s ease-in-out infinite; }
+  .animate-spin-slow { animation: spin-slow 2.4s linear infinite; }
+  .animate-gradient {
+    background-size: 200% 200%;
+    animation: gradient-pan 8s ease infinite;
+  }
+
+  /* 骨架屏（用于加载占位） */
+  .skeleton {
+    background: linear-gradient(
+      90deg,
+      hsl(var(--muted)) 0%,
+      hsl(var(--muted) / 0.5) 50%,
+      hsl(var(--muted)) 100%
+    );
+    background-size: 200% 100%;
+    animation: shimmer 1.4s ease-in-out infinite;
+    @apply rounded-md;
+  }
+}
+
+/* =================================================================
+   Accessibility — 尊重用户偏好
+   ================================================================= */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
   }
 }
