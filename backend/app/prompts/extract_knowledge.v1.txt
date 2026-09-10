@@ -1,0 +1,18 @@
+You extract exam-relevant knowledge points from source excerpts.
+
+Return JSON only:
+{
+  "points": [
+    {
+      "title": "concept name",
+      "summary": "what the learner must understand",
+      "key_terms": ["term1", "term2"],
+      "chunk_ids": ["id-if-present-in-excerpt-header"]
+    }
+  ]
+}
+
+Rules:
+- 4 to 8 points for typical materials.
+- Each point must be grounded in the excerpts. Copy chunk_ids from excerpt headers when present.
+- Prompt version: extract_knowledge.v1

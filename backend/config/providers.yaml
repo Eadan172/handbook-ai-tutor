@@ -1,0 +1,85 @@
+# LLM / embedding provider registry.
+# Business code NEVER hardcodes model names or vendor SDKs — it only passes task="...".
+# API keys are read from environment variables named in api_key_env. Never put secrets here.
+#
+# China-first defaults (DashScope / DeepSeek / SiliconFlow). Overseas vendors
+# (OpenAI, Anthropic) honor HTTP_PROXY / HTTPS_PROXY from the process environment.
+# Do not hardcode a proxy URL.
+
+default_provider: mock
+
+task_routes:
+  summarize: mock
+  extract_knowledge: mock
+  quiz_generate: mock
+  tutor: mock
+  segment_summarize: mock
+  embed: mock
+
+providers:
+  mock:
+    type: mock
+    models:
+      default: mock-llm
+      embed: mock-embed
+
+  dashscope:
+    type: openai_compatible
+    base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
+    api_key_env: DASHSCOPE_API_KEY
+    models:
+      default: qwen-plus
+      summarize: qwen-plus
+      extract_knowledge: qwen-plus
+      quiz_generate: qwen-plus
+      tutor: qwen-plus
+      segment_summarize: qwen-turbo
+      embed: text-embedding-v3
+
+  deepseek:
+    type: openai_compatible
+    base_url: https://api.deepseek.com
+    api_key_env: DEEPSEEK_API_KEY
+    models:
+      default: deepseek-chat
+      tutor: deepseek-chat
+      summarize: deepseek-chat
+
+  siliconflow:
+    type: openai_compatible
+    base_url: https://api.siliconflow.cn/v1
+    api_key_env: SILICONFLOW_API_KEY
+    models:
+      default: Qwen/Qwen2.5-7B-Instruct
+      embed: BAAI/bge-m3
+
+  openai:
+    type: openai_compatible
+    base_url: https://api.openai.com/v1
+    api_key_env: OPENAI_API_KEY
+    models:
+      default: gpt-4o-mini
+      embed: text-embedding-3-small
+
+  anthropic:
+    type: anthropic
+    base_url: https://api.anthropic.com
+    api_key_env: ANTHROPIC_API_KEY
+    models:
+      default: claude-3-5-haiku-latest
+
+  ollama:
+    type: ollama
+    base_url: http://127.0.0.1:11434
+    api_key_env: ""
+    models:
+      default: llama3.2
+      embed: nomic-embed-text
+
+  openai_compat:
+    type: openai_compatible
+    base_url: https://api.deepseek.com
+    api_key_env: OPENAI_COMPAT_API_KEY
+    models:
+      default: deepseek-chat
+      embed: deepseek-chat

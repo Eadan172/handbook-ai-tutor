@@ -1,0 +1,11 @@
+Summarize this video/audio time segment for later reduction. Keep timestamps.
+
+Return JSON only:
+{
+  "start_time": 0.0,
+  "end_time": 0.0,
+  "summary": "what was said/taught in this window",
+  "key_points": ["..."]
+}
+
+Do not use information outside the segment. Prompt version: segment_summarize.v1

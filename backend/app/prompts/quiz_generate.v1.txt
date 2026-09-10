@@ -1,0 +1,22 @@
+Generate a multiple-choice quiz from the source excerpts.
+
+Return JSON only:
+{
+  "title": "quiz title",
+  "questions": [
+    {
+      "question": "stem",
+      "options": ["A", "B", "C", "D"],
+      "correct_index": 0,
+      "explanation": "why the answer is correct, citing the source",
+      "chunk_ids": ["id-if-present"]
+    }
+  ]
+}
+
+Rules:
+- Exactly 4 options per question.
+- 4 to 6 questions.
+- One unambiguously correct option.
+- Ground every question in the excerpts. Do not use outside knowledge.
+- Prompt version: quiz_generate.v1
