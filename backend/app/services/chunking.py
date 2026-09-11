@@ -114,9 +114,62 @@ def chunk_pages(pages: list[tuple[int, str]]) -> list[RawChunk]:
     return chunks or [RawChunk(content="[no text]", page_number=1, locator="p.1")]
 
 
-def chunk_segments(segments: list[tuple[float, float, str]]) -> list[RawChunk]:
+def chapter_of(
+    start: float, chapters: list[tuple[float, float, str]]
+) -> tuple[str, int | None]:
+    """Which chapter a timestamp belongs to. Returns (title, heading_level)."""
+    for chapter_start, chapter_end, title in chapters:
+        if chapter_start <= start < chapter_end:
+            return title, 1
+    return "", None
+
+
+def video_outline_chunk(
+    chapters: list[tuple[float, float, str]], duration: float | None = None
+) -> RawChunk | None:
+    """Up-front chunk holding the chapter list of a recording.
+
+    Mirrors `outline_chunk` for books: "这节课一共讲了什么？" is answerable only
+    when the shape of the recording is retrievable, not reconstructed by luck
+    from a handful of cosine-similar fragments.
+    """
+    if not chapters:
+        return None
+    header = "视频章节大纲（章节 / 标题 / 时间点）"
+    if duration:
+        header += f"；总时长 {_fmt(duration)}"
+    body = "\n".join(
+        f"第{i}章 {title}（{_fmt(start)}–{_fmt(end)}）"
+        for i, (start, end, title) in enumerate(chapters, 1)
+    )
+    return RawChunk(
+        content=f"{header}\n{body}",
+        start_time=chapters[0][0],
+        end_time=chapters[-1][1],
+        locator="章节大纲",
+        content_type=OUTLINE,
+    )
+
+
+def chunk_segments(
+    segments: list[tuple[float, float, str]],
+    chapters: list[tuple[float, float, str]] | None = None,
+) -> list[RawChunk]:
+    """Transcript windows -> chunks, tagged with the chapter they fall in.
+
+    Without the chapter tagging every video chunk arrives unlabelled, so an
+    answer can cite "12:31" but never "第三章 · 分支预测" — and the structure
+    inspector has nothing to show.
+    """
+    chapters = chapters or []
     chunks: list[RawChunk] = []
+
+    front = video_outline_chunk(chapters)
+    if front is not None:
+        chunks.append(front)
+
     for start, end, text in segments:
+        section_title, heading_level = chapter_of(start, chapters)
         for part in _split_window(text, size=700, overlap=80):
             chunks.append(
                 RawChunk(
@@ -125,13 +178,19 @@ def chunk_segments(segments: list[tuple[float, float, str]]) -> list[RawChunk]:
                     end_time=end,
                     locator=f"{_fmt(start)}–{_fmt(end)}",
                     content_type=BODY,
+                    section_title=section_title,
+                    heading_level=heading_level,
                 )
             )
-    return chunks or [RawChunk(content="[no transcript]", start_time=0, end_time=0, locator="0:00–0:00")]
+    return chunks or [
+        RawChunk(content="[no transcript]", start_time=0, end_time=0, locator="0:00–0:00")
+    ]
 
 
 def _fmt(seconds: float) -> str:
-    s = int(seconds)
+    s = max(0, int(seconds))
+    if s >= 3600:
+        return f"{s // 3600}:{s % 3600 // 60:02d}:{s % 60:02d}"
     return f"{s // 60}:{s % 60:02d}"
 
 
@@ -329,10 +388,12 @@ __all__ = [
     "OUTLINE",
     "TYPE_LABELS",
     "RawChunk",
+    "chapter_of",
     "chunk_document",
     "chunk_pages",
     "chunk_segments",
     "format_document_excerpts",
     "format_excerpts",
     "outline_chunk",
+    "video_outline_chunk",
 ]

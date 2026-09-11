@@ -68,7 +68,16 @@ export default function DashboardPage() {
     queryKey: ["sources"],
     queryFn: () => api<Source[]>("/api/v1/sources"),
     enabled: !!token,
-    refetchInterval: 2000,
+    // Poll only while something is still being parsed. An unconditional 2s
+    // interval re-rendered the whole grid (and restarted its entrance
+    // animations) forever, which is what made the shelf feel sticky to scroll
+    // and made the cards twitch under the cursor.
+    refetchInterval: (q) => {
+      const rows = q.state.data;
+      if (!rows || rows.length === 0) return false;
+      const busy = rows.some((s) => s.status !== "ready" && s.status !== "failed");
+      return busy ? 2000 : false;
+    },
   });
 
   const remove = useMutation({
@@ -362,6 +371,12 @@ function SourceCard({
     dot: "bg-muted-foreground",
   };
   const Icon = KIND_ICON[source.kind as keyof typeof KIND_ICON] ?? FileText;
+  // The API titles a recording with its file name (a generated heading must not
+  // masquerade as the file's name), so the heading already says everything for a
+  // video. A document shows its file name as a second line only when that adds
+  // information the model-written title does not carry.
+  const heading = source.title || source.filename;
+  const subtitle = source.filename && source.filename !== heading ? source.filename : null;
   return (
     <Card interactive className="group flex h-full flex-col justify-between">
       <Link href={`/sources/${source.id}`} className="block">
@@ -372,15 +387,17 @@ function SourceCard({
                 <Icon className="h-5 w-5" />
               </span>
               <div className="min-w-0">
-                <CardTitle className="line-clamp-1 text-base">
-                  {source.title || source.filename}
+                <CardTitle className="line-clamp-1 text-base" title={heading}>
+                  {heading}
                 </CardTitle>
                 <p className="mt-0.5 line-clamp-1 text-xs text-muted-foreground">
                   {source.kind.toUpperCase()} · {formatBytes(source.byte_size)} ·{" "}
                   {formatTime(source.created_at)}
                 </p>
+                {/* Kept as an empty line rather than removed: the card sits in a
+                    grid and a missing row makes the recordings look shorter. */}
                 <p className="mt-1 line-clamp-1 text-xs text-muted-foreground/80">
-                  {source.filename}
+                  {subtitle ?? "\u00A0"}
                 </p>
               </div>
             </div>

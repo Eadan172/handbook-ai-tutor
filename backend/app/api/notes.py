@@ -215,8 +215,14 @@ async def regenerate_knowledge(
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"{type(exc).__name__}: {exc}") from exc
 
-    source.title = summary.title
-    await db.commit()
+    # A recording keeps its file name. The model's headline describes the
+    # content and belongs on the summary, not on top of "lecture-03.mp4" — the
+    # ingest pipeline already guards this, but regenerate did not, which is how
+    # a 90-minute mp4 ended up titled 「无结构片段摘录」 the moment someone
+    # pressed "LLM 重新生成".
+    if source.kind != "video":
+        source.title = summary.title
+        await db.commit()
     provider = router_llm.provider_for("summarize")
     return RegenerateOut(
         source_id=source.id,

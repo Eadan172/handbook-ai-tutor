@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import get_settings
 from app.models.chunk import DocumentChunk
 from app.models.source import Source
+from app.prompts import load_prompt
 from app.services.chunking import (
     RawChunk,
     chunk_document,
@@ -40,6 +41,14 @@ class IngestError(RuntimeError):
 #: Pages read by the layout probe that decides "text layer or scan". Kept small
 #: because its only job is to answer that one question cheaply.
 LAYOUT_PROBE_PAGES = 12
+
+
+def _fmt_time(seconds: float) -> str:
+    """Seconds -> m:ss (h:mm:ss past an hour), for chapter labels."""
+    s = max(0, int(seconds))
+    if s >= 3600:
+        return f"{s // 3600}:{s % 3600 // 60:02d}:{s % 60:02d}"
+    return f"{s // 60}:{s % 60:02d}"
 
 
 class IngestPipeline:
@@ -80,7 +89,16 @@ class IngestPipeline:
                 router=self.router,
             )
             provider = self.router.provider_for("summarize")
-            source.title = summary.title
+            # A recording keeps its filename: the model title describes the
+            # content, and dropping it on top of "lecture-03.mp4" made the file
+            # look renamed the moment the import finished. The generated title
+            # is still stored on the summary itself.
+            if source.kind != "video":
+                source.title = summary.title
+            elif not (source.title or "").strip():
+                # A row created before upload started seeding `title` would
+                # otherwise keep showing nothing at all for the mp4.
+                source.title = source.filename
             source.status = "ready"
             source.error_message = None
             await self.session.commit()
@@ -266,24 +284,42 @@ class IngestPipeline:
 
     async def _video_chunks(self, source: Source, task_id: UUID, data: bytes) -> list[RawChunk]:
         await self.progress.update(task_id, progress=15, step="ffmpeg")
-        work, wav, _duration = await extract_audio(data)
+        work, wav, duration = await extract_audio(data)
         try:
             await self.progress.update(task_id, progress=25, step="stt")
             stt = get_stt()
             segments = await stt.transcribe(wav)
-            await self.progress.update(task_id, progress=40, step="map_reduce")
-            await self._map_reduce_segments(source, segments)
-            return chunk_segments([(s.start, s.end, s.text) for s in segments])
+            if not segments:
+                raise IngestError(
+                    "Speech-to-text produced no segments. The recording may have no "
+                    "usable audio track."
+                )
+            await self.progress.update(task_id, progress=40, step="chapters")
+            chapters = await self._video_chapters(source, segments, duration)
+            self._record_video_structure(source, chapters, duration)
+            note = f"STT {stt.name} ({len(segments)} segments)"
+            if chapters:
+                note += f" · {len(chapters)} chapters"
+            if self.extraction_note:
+                note = f"{self.extraction_note} · {note}"
+            self.extraction_note = note
+            return chunk_segments([(s.start, s.end, s.text) for s in segments], chapters)
         finally:
             shutil.rmtree(work, ignore_errors=True)
 
-    async def _map_reduce_segments(self, source: Source, segments) -> None:
-        """Summarize time windows independently (retry per window). Never dump the full transcript."""
+    @staticmethod
+    def _time_windows(segments: list, char_budget: int = 800, max_windows: int = 60) -> list[list]:
+        """Group segments into windows small enough for one summarization call.
+
+        `max_windows` bounds the number of LLM calls: a three-hour recording must
+        not turn into three hundred requests. Retrieval still sees every segment
+        — only chapter granularity is coarsened.
+        """
         windows: list[list] = []
         current: list = []
         chars = 0
         for seg in segments:
-            if chars + len(seg.text) > 800 and current:
+            if chars + len(seg.text) > char_budget and current:
                 windows.append(current)
                 current = []
                 chars = 0
@@ -291,62 +327,165 @@ class IngestPipeline:
             chars += len(seg.text)
         if current:
             windows.append(current)
+        if len(windows) > max_windows:
+            step = len(windows) / max_windows
+            picked = [windows[min(int(i * step), len(windows) - 1)] for i in range(max_windows)]
+            picked[-1] = windows[-1]
+            windows = picked
+        return windows
 
-        window_summaries: list[str] = []
-        for i, window in enumerate(windows):
-            body = "\n".join(f"[{s.start:.1f}-{s.end:.1f}] {s.text}" for s in window)
-            last_exc: Exception | None = None
-            for _attempt in range(3):
-                try:
-                    result = await self.router.complete(
-                        task="segment_summarize",
-                        messages=[
-                            ChatMessage(
-                                role="system",
-                                content="Summarize this time window only. Return JSON.",
-                            ),
-                            ChatMessage(role="user", content=body),
-                        ],
-                        user_id=source.user_id,
-                        source_id=source.id,
-                    )
-                    data = parse_json_object(result.content)
-                    window_summaries.append(
-                        json.dumps(
-                            {
-                                "window": i,
-                                "start": window[0].start,
-                                "end": window[-1].end,
-                                "summary": data.get("summary") or result.content[:400],
-                            },
-                            ensure_ascii=False,
-                        )
-                    )
-                    last_exc = None
-                    break
-                except Exception as exc:  # retry this window only
-                    last_exc = exc
-            if last_exc is not None:
-                window_summaries.append(
-                    json.dumps(
-                        {
-                            "window": i,
-                            "start": window[0].start,
-                            "end": window[-1].end,
-                            "summary": " ".join(s.text for s in window)[:400],
-                            "error": str(last_exc)[:200],
-                        }
-                    )
+    async def _summarize_window(self, source: Source, index: int, window: list) -> dict:
+        """Map step: one time window -> one summary. Retries only this window."""
+        base = {
+            "window": index,
+            "start": float(window[0].start),
+            "end": float(window[-1].end),
+        }
+        body = "\n".join(f"[{s.start:.1f}-{s.end:.1f}] {s.text}" for s in window)
+        last_exc: Exception | None = None
+        for _attempt in range(3):
+            try:
+                result = await self.router.complete(
+                    task="segment_summarize",
+                    # The prompt file says "Return JSON only" in so many words.
+                    # DeepSeek rejects response_format=json_object otherwise, and
+                    # a bare "Return JSON." system line was exactly that bug.
+                    messages=[
+                        ChatMessage(
+                            role="system",
+                            content=load_prompt("segment_summarize.v1.txt"),
+                        ),
+                        ChatMessage(role="user", content=body),
+                    ],
+                    user_id=source.user_id,
+                    source_id=source.id,
                 )
-        # Reduce: send window summaries, not the raw transcript.
-        await self.router.complete(
-            task="summarize",
-            messages=[
-                ChatMessage(role="system", content="Combine window summaries of a video lesson."),
-                ChatMessage(role="user", content="\n".join(window_summaries)[:4000]),
-            ],
-            user_id=source.user_id,
-            source_id=source.id,
+                data = parse_json_object(result.content)
+                return {
+                    **base,
+                    "summary": data.get("summary") or result.content[:400],
+                    "key_points": data.get("key_points") or [],
+                }
+            except Exception as exc:  # keep going; one bad window is not fatal
+                last_exc = exc
+        return {
+            **base,
+            "summary": " ".join(s.text for s in window)[:400],
+            "error": str(last_exc)[:200] if last_exc else "unknown error",
+        }
+
+    async def _video_chapters(
+        self, source: Source, segments: list, duration: float | None
+    ) -> list[tuple[float, float, str]]:
+        """Map-reduce the transcript into timestamped chapters.
+
+        Always returns something usable: when the model is unreachable the time
+        windows themselves become the chapters, so the player still gets working
+        jump targets and the UI says where the structure came from.
+        """
+        windows = self._time_windows(segments)
+        if not windows:
+            return []
+
+        summaries: list[dict] = []
+        for i, window in enumerate(windows):
+            summaries.append(await self._summarize_window(source, i, window))
+        failed = sum(1 for s in summaries if s.get("error"))
+        if failed:
+            self.extraction_note = f"{failed}/{len(summaries)} windows summarized locally"
+
+        chapters = await self._reduce_chapters(source, summaries, duration)
+        if chapters:
+            return chapters
+
+        # Fallback: the windows are already contiguous and timestamped.
+        self.extraction_note = (
+            f"{self.extraction_note} · " if self.extraction_note else ""
+        ) + "chapter titles unavailable, using time windows"
+        fallback: list[tuple[float, float, str]] = []
+        for i, item in enumerate(summaries):
+            start = float(item["start"])
+            end = float(item["end"])
+            label = str(item.get("summary") or "").strip().replace("\n", " ")
+            fallback.append((start, end, label[:28] or f"片段 {i + 1}（{_fmt_time(start)}）"))
+        return fallback
+
+    async def _reduce_chapters(
+        self, source: Source, summaries: list[dict], duration: float | None
+    ) -> list[tuple[float, float, str]]:
+        """Reduce step: merge adjacent window summaries into a chapter list."""
+        if not summaries:
+            return []
+        listing = "\n".join(
+            f"[{float(s['start']):.0f}-{float(s['end']):.0f}] {str(s.get('summary') or '')[:300]}"
+            for s in summaries
+        )
+        head = (
+            "You are given summaries of consecutive time windows of one recorded lesson"
+            + (f" (total length {duration:.0f}s). " if duration else ". ")
+            + "Merge adjacent windows into 4-12 coherent chapters. Reuse the timestamps "
+            "that appear in the input; never invent one.\n\n"
+            "Return JSON only:\n"
+            '{"chapters":[{"title":"...","start":0.0,"end":0.0,"summary":"..."}]}\n\n'
+            "Prompt version: video_chapters.v1"
+        )
+        try:
+            result = await self.router.complete(
+                task="summarize",
+                messages=[
+                    ChatMessage(role="system", content=head),
+                    ChatMessage(role="user", content=listing[:6000]),
+                ],
+                user_id=source.user_id,
+                source_id=source.id,
+            )
+            data = parse_json_object(result.content)
+        except Exception:
+            return []
+
+        chapters: list[tuple[float, float, str]] = []
+        for item in data.get("chapters") or []:
+            if not isinstance(item, dict):
+                continue
+            title = str(item.get("title") or "").strip()
+            try:
+                start = float(item.get("start"))
+                end = float(item.get("end"))
+            except (TypeError, ValueError):
+                continue
+            if not title or end <= start:
+                continue
+            chapters.append((start, end, title[:120]))
+        chapters.sort(key=lambda c: c[0])
+        return chapters
+
+    def _record_video_structure(
+        self, source: Source, chapters: list[tuple[float, float, str]], duration: float | None
+    ) -> None:
+        """Persist the chapter tree so the player can jump and the UI can list it.
+
+        Stored as an object rather than a bare list so the recording's duration
+        rides along without a schema migration.
+        """
+        source.page_count = None
+        source.page_offset = None
+        source.section_outline_json = json.dumps(
+            {
+                "kind": "video",
+                "duration": duration,
+                "sections": [
+                    {
+                        "level": 1,
+                        "number": str(i),
+                        "title": title,
+                        "page_number": 0,
+                        "start_time": start,
+                        "end_time": end,
+                    }
+                    for i, (start, end, title) in enumerate(chapters, 1)
+                ],
+            },
+            ensure_ascii=False,
         )
 
     # -------------------------------------------------------------- shared

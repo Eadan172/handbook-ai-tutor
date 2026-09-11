@@ -62,6 +62,7 @@ tools/
 
 # E2E test outputs (LLM-generated notes / Q&A / quiz records about user materials)
 test-outputs/
+test/
 
 # TypeScript incremental build cache
 *.tsbuildinfo

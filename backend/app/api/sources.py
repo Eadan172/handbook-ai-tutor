@@ -5,7 +5,18 @@ import urllib.parse
 from io import BytesIO
 from uuid import UUID, uuid4
 
-from fastapi import APIRouter, Depends, File, HTTPException, Query, Response, UploadFile, status
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    HTTPException,
+    Query,
+    Request,
+    Response,
+    UploadFile,
+    status,
+)
+from fastapi.responses import StreamingResponse
 from PIL import Image
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -180,13 +191,6 @@ async def get_structure(
     """
     source = await _owned_source(db, source_id, user.id)
 
-    outline: list[OutlineEntry] = []
-    try:
-        for raw in json.loads(source.section_outline_json or "[]"):
-            outline.append(OutlineEntry.model_validate(raw))
-    except Exception:
-        outline = []
-
     chunks = (
         (
             await db.execute(
@@ -199,22 +203,63 @@ async def get_structure(
         .all()
     )
 
+    # A recording stores {"kind","duration","sections"}; a document stores a bare
+    # list. Both shapes are accepted so existing rows keep working.
+    duration: float | None = None
+    outline: list[OutlineEntry] = []
+    try:
+        raw = json.loads(source.section_outline_json or "[]")
+        if isinstance(raw, dict):
+            sections = raw.get("sections") or []
+            raw_duration = raw.get("duration")
+            duration = float(raw_duration) if raw_duration is not None else None
+        else:
+            sections = raw or []
+        for item in sections:
+            outline.append(OutlineEntry.model_validate(item))
+    except Exception:
+        outline = []
+
+    # Recordings ingested before the chapter pass existed have an empty outline
+    # column even though their transcript chunks carry real timestamps — the
+    # panel then claimed "没有任何结构分析结果" while 900 usable timestamps sat in
+    # the table. Rebuild a chapter list from the chunks instead of showing
+    # nothing, and say so through the same jumpable structure the fresh pipeline
+    # produces.
+    if source.kind == "video":
+        if not outline:
+            outline = _outline_from_timed_chunks(chunks)
+        if duration is None:
+            ends = [float(c.end_time) for c in chunks if c.end_time is not None]
+            duration = max(ends) if ends else None
+
     counts: dict[str, int] = {}
     for chunk in chunks:
         key = chunk.content_type or "body"
         counts[key] = counts.get(key, 0) + 1
 
-    section_index: dict[str, list[int]] = {}
+    # "Where is this section?" — a page for a book, a timestamp for a recording.
+    section_index: dict[str, list[float]] = {}
     for chunk in chunks:
-        if chunk.content_type != "heading" or not chunk.section_title:
+        title = (chunk.section_title or "").strip()
+        if not title:
             continue
-        pages = section_index.setdefault(chunk.section_title, [])
-        page = chunk.printed_page if chunk.printed_page is not None else chunk.page_number
-        if page is not None and page not in pages:
-            pages.append(page)
+        if chunk.start_time is not None:
+            marks = section_index.setdefault(title, [])
+            seconds = float(chunk.start_time)
+            if seconds not in marks:
+                marks.append(seconds)
+        elif (chunk.content_type or "") == "heading":
+            page = chunk.printed_page if chunk.printed_page is not None else chunk.page_number
+            if page is not None:
+                marks = section_index.setdefault(title, [])
+                if float(page) not in marks:
+                    marks.append(float(page))
 
     return SourceStructureOut(
         source_id=source.id,
+        kind=source.kind,
+        duration=duration,
         page_offset=source.page_offset,
         page_count=source.page_count,
         outline=outline,
@@ -230,6 +275,8 @@ async def get_structure(
                 printed_page=chunk.printed_page,
                 locator=chunk.locator,
                 heading_level=chunk.heading_level,
+                start_time=chunk.start_time,
+                end_time=chunk.end_time,
                 preview=(chunk.content or "")[:160],
             )
             for chunk in chunks[:limit]
@@ -238,36 +285,198 @@ async def get_structure(
     )
 
 
+#: How many chapters a synthesised recording outline aims for when the chunker
+#: did not leave section tags behind.
+_SYNTH_MIN_CHAPTERS = 4
+_SYNTH_MAX_CHAPTERS = 12
+_SYNTH_SECONDS_PER_CHAPTER = 180.0
+
+
+def _outline_from_timed_chunks(chunks: list[DocumentChunk]) -> list[OutlineEntry]:
+    """Rebuild a chapter tree for a recording from its own transcript chunks.
+
+    Two strategies, in order of fidelity:
+
+    1. the chunker already tagged every body chunk with the chapter it belongs
+       to (`section_title`) — group consecutive runs of the same tag;
+    2. there is no tagging at all, so fall back to even time windows over the
+       transcript, labelled exactly like the pipeline's own fallback
+       (``片段 N（m:ss）``).
+
+    Never invents a timestamp: every boundary comes from a real chunk.
+    """
+    timed = [c for c in chunks if c.start_time is not None]
+    if not timed:
+        return []
+
+    def start_of(chunk: DocumentChunk) -> float:
+        return float(chunk.start_time or 0.0)
+
+    def end_of(chunk: DocumentChunk) -> float:
+        return float(chunk.end_time) if chunk.end_time is not None else start_of(chunk)
+
+    body = [c for c in timed if (c.content_type or "body") != "outline"]
+    if not body:
+        body = timed
+
+    # --- strategy 1: use the chapter tags the chunker wrote
+    runs: list[tuple[str, list[DocumentChunk]]] = []
+    for chunk in body:
+        title = (chunk.section_title or "").strip()
+        if runs and runs[-1][0] == title:
+            runs[-1][1].append(chunk)
+        else:
+            runs.append((title, [chunk]))
+    titled = [run for run in runs if run[0]]
+    if len(titled) >= 2:
+        entries = [
+            OutlineEntry(
+                level=1,
+                number=str(i),
+                title=title[:200],
+                page_number=0,
+                start_time=min(start_of(c) for c in rows),
+                end_time=max(end_of(c) for c in rows),
+            )
+            for i, (title, rows) in enumerate(titled, 1)
+        ]
+        entries.sort(key=lambda e: e.start_time or 0.0)
+        for i, entry in enumerate(entries, 1):
+            entry.number = str(i)
+        return entries
+
+    # --- strategy 2: even time windows over the transcript
+    ordered = sorted(body, key=start_of)
+    span = end_of(ordered[-1]) - start_of(ordered[0])
+    target = int(span // _SYNTH_SECONDS_PER_CHAPTER) if span > 0 else _SYNTH_MIN_CHAPTERS
+    target = max(_SYNTH_MIN_CHAPTERS, min(_SYNTH_MAX_CHAPTERS, target))
+    step = max(1, len(ordered) // target)
+    buckets: list[list[DocumentChunk]] = [
+        ordered[i : i + step] for i in range(0, len(ordered), step)
+    ]
+    entries: list[OutlineEntry] = []
+    for i, bucket in enumerate(buckets, 1):
+        if not bucket:
+            continue
+        begin = start_of(bucket[0])
+        entries.append(
+            OutlineEntry(
+                level=1,
+                number=str(i),
+                title=f"片段 {i}（{_clock(begin)}）",
+                page_number=0,
+                start_time=begin,
+                end_time=max(end_of(c) for c in bucket),
+            )
+        )
+    return entries
+
+
+def _clock(seconds: float) -> str:
+    total = max(0, int(seconds))
+    if total >= 3600:
+        return f"{total // 3600}:{total % 3600 // 60:02d}:{total % 60:02d}"
+    return f"{total // 60}:{total % 60:02d}"
+
+
+def _resolve_range(header: str | None, size: int) -> tuple[int, int] | None:
+    """Turn a `Range: bytes=` header into an inclusive (start, end) pair.
+
+    Returns None when the header should be ignored and the whole file sent.
+    Raises 416 for a syntactically valid but unsatisfiable range, which is what
+    tells a <video> element that the resource simply ends here.
+    """
+    if not header or not header.strip().lower().startswith("bytes="):
+        return None
+    spec = header.split("=", 1)[1].strip()
+    if "," in spec:
+        # Multipart ranges are not worth supporting for a single media file.
+        return None
+    start_s, _, end_s = spec.partition("-")
+    try:
+        if not start_s:  # bytes=-N -> the last N bytes
+            n = int(end_s)
+            if n <= 0:
+                return None
+            start = max(0, size - n)
+            end = size - 1
+        else:
+            start = int(start_s)
+            end = int(end_s) if end_s else size - 1
+    except ValueError:
+        return None
+    if start < 0 or start >= size:
+        raise HTTPException(
+            status_code=status.HTTP_416_REQUESTED_RANGE_NOT_SATISFIABLE,
+            detail=f"Requested range starts past the end of a {size}-byte file",
+            headers={"Content-Range": f"bytes */{size}"},
+        )
+    end = min(end, size - 1)
+    if end < start:
+        raise HTTPException(
+            status_code=status.HTTP_416_REQUESTED_RANGE_NOT_SATISFIABLE,
+            detail="Requested range is empty",
+            headers={"Content-Range": f"bytes */{size}"},
+        )
+    return start, end
+
+
 @router.get("/{source_id}/file")
 async def download_source_file(
     source_id: UUID,
+    request: Request,
     token: str | None = Query(default=None, description="JWT, for iframe/embed viewers"),
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user_allow_query_token),
 ) -> Response:
     """Stream the original upload back to the browser.
 
-    Used by the left-hand PDF pane. `Content-Disposition: inline` lets the
-    browser's built-in viewer render it in place; `?download=1` is handled by
-    the frontend as a plain link.
+    `Content-Disposition: inline` lets the browser's built-in viewer render it in
+    place. Byte ranges are honoured because without them a <video> element can
+    play but cannot be scrubbed: the player has no way to fetch "minute 42 only",
+    so dragging the progress bar either does nothing or restarts the file.
     """
     source = await _owned_source(db, source_id, user.id)
-    try:
-        data = await get_storage().get_bytes(source.storage_key)
-    except FileNotFoundError:
-        raise HTTPException(status_code=410, detail="File is no longer in storage") from None
-    except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"Storage read failed: {exc}") from exc
-
+    storage = get_storage()
+    media_type = source.content_type or "application/octet-stream"
     quoted = urllib.parse.quote(source.filename)
-    return Response(
-        content=data,
-        media_type=source.content_type or "application/octet-stream",
-        headers={
-            "Content-Disposition": f"inline; filename*=UTF-8''{quoted}",
-            "Cache-Control": "private, max-age=0, no-store",
-            "X-Content-Type-Options": "nosniff",
-        },
+    headers = {
+        "Content-Disposition": f"inline; filename*=UTF-8''{quoted}",
+        "Cache-Control": "private, max-age=0, no-store",
+        "X-Content-Type-Options": "nosniff",
+        "Accept-Ranges": "bytes",
+    }
+
+    try:
+        size = await storage.size(source.storage_key)
+    except Exception:
+        size = None
+
+    if not size:
+        # No size (or an empty object): keep the previous whole-body behaviour.
+        try:
+            data = await storage.get_bytes(source.storage_key)
+        except FileNotFoundError:
+            raise HTTPException(status_code=410, detail="File is no longer in storage") from None
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=f"Storage read failed: {exc}") from exc
+        headers["Content-Length"] = str(len(data))
+        return Response(content=data, media_type=media_type, headers=headers)
+
+    rng = _resolve_range(request.headers.get("range"), size)
+    start, end = rng if rng else (0, size - 1)
+    length = end - start + 1
+    headers["Content-Length"] = str(length)
+    status_code = status.HTTP_200_OK
+    if rng:
+        status_code = status.HTTP_206_PARTIAL_CONTENT
+        headers["Content-Range"] = f"bytes {start}-{end}/{size}"
+
+    return StreamingResponse(
+        storage.iter_range(source.storage_key, start, length),
+        status_code=status_code,
+        media_type=media_type,
+        headers=headers,
     )
 
 

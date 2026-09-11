@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useParams, useRouter } from "next/navigation";
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertCircle,
   CheckCircle2,
@@ -67,8 +67,14 @@ export default function SourcePage() {
     queryKey: ["source", id],
     queryFn: () => api<Source>(`/api/v1/sources/${id}`),
     enabled: !!token && !!id,
-    refetchInterval: (q) =>
-      q.state.data?.status === "ready" || q.state.data?.status === "failed" ? false : 1500,
+    // Poll *only* while the ingest pipeline is still moving. A fixed 1.5s
+    // interval kept firing forever after the source reached a terminal state,
+    // which re-rendered the whole page (video element included) twice a second
+    // and made scrolling stutter for no reason.
+    refetchInterval: (q) => {
+      const status = q.state.data?.status;
+      return !status || status === "ready" || status === "failed" ? false : 1500;
+    },
   });
 
   const taskId = source.data?.task_id;
@@ -172,6 +178,39 @@ export default function SourcePage() {
     [id, token]
   );
 
+  const kind = source.data?.kind;
+  const isVideo = kind === "video";
+
+  // The API guarantees a recording is titled by its file name (the regenerate
+  // pass used to overwrite it with a generated heading like 「无结构片段摘录」),
+  // so this is just the loading fallback.
+  const displayTitle = source.data?.title || source.data?.filename;
+
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const [pdfPage, setPdfPage] = useState<number | null>(null);
+
+  // The PDF viewer honours `#page=N`, but only when the fragment changes the
+  // URL — so it is composed here instead of being mutated on the DOM node.
+  const pdfUrl = useMemo(
+    () => (pdfPage && fileUrl ? `${fileUrl}#page=${pdfPage}` : fileUrl),
+    [fileUrl, pdfPage]
+  );
+
+  const seekVideo = useCallback((seconds: number) => {
+    const el = videoRef.current;
+    if (!el) return;
+    el.currentTime = seconds;
+    // Chrome ignores `currentTime` while the media is still loading metadata.
+    const apply = () => {
+      el.currentTime = seconds;
+      void el.play().catch(() => undefined);
+    };
+    if (el.readyState >= 1) apply();
+    else el.addEventListener("loadedmetadata", apply, { once: true });
+  }, []);
+
+  const jumpToPage = useCallback((page: number) => setPdfPage(page), []);
+
   return (
     <div className="flex h-screen flex-col overflow-hidden">
       <AppHeader />
@@ -179,25 +218,36 @@ export default function SourcePage() {
       <div className="mx-auto w-full max-w-[1600px] shrink-0 px-4 pt-4">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="min-w-0">
-            <h1 className="truncate text-xl font-semibold">
-              {source.data?.title || source.data?.filename || "加载中…"}
+            <h1 className="truncate text-xl font-semibold" title={displayTitle || undefined}>
+              {displayTitle || "加载中…"}
             </h1>
             <p className="truncate text-xs text-muted-foreground">
-              {source.data?.filename} · {source.data ? formatBytes(source.data.byte_size) : "—"} ·{" "}
+              {isVideo ? "MP4 视频" : kind === "image" ? "图片" : "PDF"} ·{" "}
+              {source.data ? formatBytes(source.data.byte_size) : "—"} ·{" "}
               <StatusBadge status={status} />
             </p>
+            {!isVideo && source.data?.filename && (
+              <p className="truncate text-xs text-muted-foreground/80" title={source.data.filename}>
+                {source.data.filename}
+              </p>
+            )}
+            {isVideo && summary.data?.title && (
+              <p className="truncate text-xs text-muted-foreground/80" title={summary.data.title}>
+                AI 主题：{summary.data.title}
+              </p>
+            )}
           </div>
           <div className="flex flex-wrap gap-2">
             <Button asChild size="sm" variant="secondary">
-              <Link href={`/sources/${id}/quiz`}>
+              <Link href={`/sources/${id}/quiz`} title="生成测试题与题目解析">
                 <ListChecks />
                 Quiz
               </Link>
             </Button>
             <Button asChild size="sm" variant="secondary">
-              <Link href={`/sources/${id}/tutor`}>
+              <Link href={`/sources/${id}/tutor`} title="就这份资料提问">
                 <MessageSquareQuote />
-                Tutor
+                Tutor Q&A
               </Link>
             </Button>
             <Button
@@ -205,9 +255,16 @@ export default function SourcePage() {
               variant="outline"
               onClick={() => regenerate.mutate()}
               disabled={!ready || regenerate.isPending}
+              title={
+                ready
+                  ? "用当前配置的 LLM 重新生成摘要与知识点"
+                  : failed
+                    ? "解析失败，无法重新梳理；请修正配置后重新导入"
+                    : "等待解析完成后可用"
+              }
             >
               {regenerate.isPending ? <Loader2 className="animate-spin" /> : <RefreshCw />}
-              {regenerate.isPending ? "重新梳理中…" : "LLM 重新梳理"}
+              {regenerate.isPending ? "重新生成中…" : "LLM 重新生成"}
             </Button>
             <Button size="sm" variant="outline" onClick={() => doExport.mutate()} disabled={doExport.isPending}>
               <Download />
@@ -287,7 +344,19 @@ export default function SourcePage() {
       <main className="mx-auto grid w-full max-w-[1600px] min-h-0 flex-1 grid-cols-1 gap-4 px-4 py-4 lg:grid-cols-2">
         <section className="flex min-h-0 flex-col overflow-hidden rounded-xl border bg-card">
           <div className="flex shrink-0 items-center justify-between gap-2 border-b px-3 py-2">
-            <span className="text-sm font-medium">原文</span>
+            <span className="flex items-center gap-2 text-sm font-medium">
+              原文
+              {!isVideo && pdfPage != null && (
+                <button
+                  type="button"
+                  onClick={() => setPdfPage(null)}
+                  className="rounded-full bg-primary/10 px-2 py-0.5 text-xs font-normal text-primary underline-offset-4 hover:underline"
+                  title="回到文档开头"
+                >
+                  已跳到第 {pdfPage} 页 · 复位
+                </button>
+              )}
+            </span>
             <div className="flex gap-2">
               <Button asChild size="sm" variant="ghost">
                 <a href={fileUrl} target="_blank" rel="noreferrer">
@@ -301,14 +370,40 @@ export default function SourcePage() {
               </Button>
             </div>
           </div>
-          <div className="min-h-0 flex-1 overflow-auto bg-muted/40">
-            {!token ? null : source.data?.kind === "video" ? (
-              <video src={fileUrl} controls className="h-full w-full" />
-            ) : source.data?.kind === "image" ? (
+          <div
+            className={`min-h-0 flex-1 bg-muted/40 ${
+              // A scroll container around <video> only adds a second scrollbar
+              // and can clip the native control bar; the player sizes itself.
+              isVideo ? "flex items-center justify-center overflow-hidden" : "overflow-auto"
+            }`}
+          >
+            {!token ? null : isVideo ? (
+              <video
+                ref={videoRef}
+                src={fileUrl}
+                controls
+                playsInline
+                preload="metadata"
+                className="h-full w-full bg-black"
+                onError={(e) =>
+                  setBanner({
+                    kind: "err",
+                    text: `视频无法播放：${e.currentTarget.error?.message || "浏览器拒绝了该媒体文件"}`,
+                  })
+                }
+              >
+                你的浏览器不支持内嵌视频播放。
+              </video>
+            ) : kind === "image" ? (
               // eslint-disable-next-line @next/next/no-img-element
               <img src={fileUrl} alt={source.data?.filename || "source"} className="mx-auto block max-w-full" />
             ) : source.data ? (
-              <iframe src={fileUrl} title="source-pdf" className="h-full min-h-[70vh] w-full" />
+              <iframe
+                key={pdfUrl}
+                src={pdfUrl}
+                title="source-pdf"
+                className="h-full min-h-[70vh] w-full"
+              />
             ) : null}
           </div>
         </section>
@@ -370,7 +465,12 @@ export default function SourcePage() {
             </CardContent>
           </Card>
 
-          <StructurePanel sourceId={id} />
+          <StructurePanel
+            sourceId={id}
+            kind={kind}
+            onJumpToPage={jumpToPage}
+            onSeek={seekVideo}
+          />
 
           <NotesPanel
             sourceId={id}

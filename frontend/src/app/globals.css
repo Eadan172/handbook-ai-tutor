@@ -77,16 +77,36 @@
     -moz-osx-font-smoothing: grayscale;
     text-rendering: optimizeLegibility;
     scroll-behavior: smooth;
+    /* The base colour lives on <html> (so it reaches the canvas) and the
+       decorative gradients live on a fixed pseudo-element below. `body` must
+       stay transparent, otherwise its own background would paint over them. */
+    background-color: hsl(var(--background));
   }
 
   body {
-    @apply bg-background text-foreground;
+    @apply text-foreground;
+    background-color: transparent;
     font-feature-settings: "rlig" 1, "calt" 1, "ss01" 1;
+  }
+
+  /* Decorative page glow.
+     Was `background-attachment: fixed` on <body>, which forces the gradient to
+     be re-rendered against the viewport on *every* scroll frame — with the
+     sticky backdrop-filter header on top that alone made long pages scroll
+     like treacle. A `position: fixed` layer is composited once and then simply
+     reused, so the look is identical and scrolling stays cheap. `z-index: -1`
+     keeps it above the canvas colour but below all page content, and
+     `pointer-events: none` guarantees it can never swallow a click. */
+  body::before {
+    content: "";
+    position: fixed;
+    inset: 0;
+    z-index: -1;
+    pointer-events: none;
     background-image:
       radial-gradient(at 12% 0%, hsl(var(--gradient-from) / 0.08) 0px, transparent 50%),
       radial-gradient(at 92% 0%, hsl(var(--gradient-to) / 0.06) 0px, transparent 50%),
       radial-gradient(at 50% 100%, hsl(var(--accent) / 0.04) 0px, transparent 50%);
-    background-attachment: fixed;
   }
 
   /* 统一焦点环（仅键盘） */
@@ -168,9 +188,16 @@
     );
   }
 
-  /* 渐变 hover 光晕（用于卡片 / 列表项） */
+  /* 渐变 hover 光晕（用于卡片 / 列表项）
+     只过渡 transform / box-shadow：`transition-all` 会把每个可动画属性都挂在
+     过渡上（含 filter、background 渐变），在 hover 反复进出时不断重绘合成层，
+     文字会糊、卡片会抖。显式列白名单后，成本固定且可预测。 */
   .hover-lift {
-    @apply transition-all duration-200;
+    transition:
+      transform 200ms cubic-bezier(0.16, 1, 0.3, 1),
+      box-shadow 200ms cubic-bezier(0.16, 1, 0.3, 1),
+      border-color 200ms cubic-bezier(0.16, 1, 0.3, 1),
+      background-color 200ms cubic-bezier(0.16, 1, 0.3, 1);
   }
   .hover-lift:hover {
     transform: translateY(-2px);
@@ -182,13 +209,19 @@
     @apply transition-transform duration-100 active:scale-[0.97];
   }
 
-  /* 状态点（用于来源状态 / 任务状态） */
+  /* 状态点（用于来源状态 / 任务状态）
+     `position: relative` 不是装饰，是必需的：下面的 ::after 用 `inset-0`
+     定位，一旦这里没有定位上下文，它就会相对**视口**解析成一个铺满全屏的
+     不可见盒子，盖住页面里所有静态元素（按钮、video 原生控制条都点不到），
+     并在卡片 hover 产生 transform 时（transform 会新建包含块）在“全屏”与
+     “卡片大小”之间来回跳，形成卡片高速抖动 + 画面模糊。
+     这里同时把 ::after 收进 2px 的点内并屏蔽指针事件，双重保险。 */
   .status-dot {
-    @apply inline-block h-2 w-2 rounded-full;
+    @apply relative inline-block h-2 w-2 rounded-full;
   }
   .status-dot::after {
     content: "";
-    @apply absolute inset-0 rounded-full;
+    @apply pointer-events-none absolute inset-0 rounded-full;
   }
 
   /* 章节大纲（mono 字体的层级缩进） */
@@ -248,10 +281,19 @@
     50% { background-position: 100% 50%; }
   }
 
-  .animate-fade-in { animation: fade-in 0.4s ease-out both; }
-  .animate-fade-up { animation: fade-up 0.5s cubic-bezier(0.16, 1, 0.3, 1) both; }
-  .animate-fade-down { animation: fade-down 0.4s ease-out both; }
-  .animate-scale-in { animation: scale-in 0.3s cubic-bezier(0.16, 1, 0.3, 1) both; }
+  /* Entrance animations use `backwards`, never `both`.
+     `both` keeps applying the *last* keyframe after the animation ends, and
+     `fade-up` ends on `transform: translateY(0)` — a non-`none` transform, which
+     is enough to turn the element into a containing block and a composited
+     layer for the rest of its life. Every card/panel underneath then gets
+     rasterised into that layer, which is where the "hover 就变模糊" and the
+     jitter came from. `backwards` still applies the `from` state during the
+     animation-delay (so nothing flashes), but hands the element back to its own
+     computed style once it finishes — `transform: none`, crisp text. */
+  .animate-fade-in { animation: fade-in 0.4s ease-out backwards; }
+  .animate-fade-up { animation: fade-up 0.5s cubic-bezier(0.16, 1, 0.3, 1) backwards; }
+  .animate-fade-down { animation: fade-down 0.4s ease-out backwards; }
+  .animate-scale-in { animation: scale-in 0.3s cubic-bezier(0.16, 1, 0.3, 1) backwards; }
   .animate-pulse-soft { animation: pulse-soft 2s ease-in-out infinite; }
   .animate-spin-slow { animation: spin-slow 2.4s linear infinite; }
   .animate-gradient {

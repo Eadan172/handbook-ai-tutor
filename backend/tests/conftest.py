@@ -24,6 +24,13 @@ os.environ["PROVIDERS_CONFIG_PATH"] = str(
     Path(__file__).resolve().parents[1] / "config" / "providers.yaml"
 )
 
+# The launchers (start.bat / run_local_backend.sh) put the bundled ffmpeg on PATH
+# before importing the app; pytest is started directly, so it has to do the same
+# or `tests/helpers.py::tiny_mp4_bytes` cannot build its fixture clip.
+_FFMPEG_BIN = Path(__file__).resolve().parents[2] / "tools" / "ffmpeg" / "bin"
+if (_FFMPEG_BIN / "ffmpeg.exe").is_file():
+    os.environ["PATH"] = f"{_FFMPEG_BIN}{os.pathsep}{os.environ.get('PATH', '')}"
+
 from app.core.config import get_settings  # noqa: E402
 from app.core.db import engine  # noqa: E402
 from app.main import app  # noqa: E402

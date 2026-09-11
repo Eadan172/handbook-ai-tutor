@@ -39,6 +39,19 @@ OVERRIDABLE: dict[str, str] = {
     "providers_config_path": "PROVIDERS_CONFIG_PATH",
 }
 
+#: The hand-entered Embedding API. Same store, different traffic: these values
+#: are read by ModelRouter, not by pydantic-settings, and one of them is a
+#: secret — so the API never echoes them back (see `describe_embed`).
+EMBED_KEYS: dict[str, str] = {
+    "embed_api_base": "EMBED_API_BASE",
+    "embed_api_key": "EMBED_API_KEY",
+    "embed_model": "EMBED_MODEL",
+}
+
+#: Everything runtime.json may hold. Used for load/save/apply filtering; the
+#: paths UI separately reports only OVERRIDABLE.
+ALL_OVERRIDABLE: dict[str, str] = {**OVERRIDABLE, **EMBED_KEYS}
+
 #: Human-facing metadata, kept next to the routing table so the API, the tests
 #: and the UI agree on what each entry means.
 PATHS_META: dict[str, dict[str, str]] = {
@@ -51,6 +64,24 @@ PATHS_META: dict[str, dict[str, str]] = {
         "label": "LLM 供应商配置文件",
         "kind": "file",
         "hint": "providers.yaml 决定每个任务调用哪个供应商与模型。必须是一个能解析出 providers 段的 YAML 文件。",
+    },
+}
+
+EMBED_META: dict[str, dict[str, str]] = {
+    "embed_api_base": {
+        "label": "Embedding API 地址",
+        "placeholder": "https://api.openai.com/v1",
+        "hint": "OpenAI 兼容的 /embeddings 前缀地址，末尾的 /v1 要保留。",
+    },
+    "embed_api_key": {
+        "label": "Embedding API 密钥",
+        "placeholder": "sk-...",
+        "hint": "只保存在本机的 backend/config/runtime.json，页面不会回显；本地无鉴权服务可以留空。",
+    },
+    "embed_model": {
+        "label": "Embedding 模型",
+        "placeholder": "text-embedding-3-small",
+        "hint": "必须是该地址支持的向量模型名。",
     },
 }
 
@@ -91,7 +122,7 @@ def load_overrides() -> dict[str, str]:
     return {
         key: str(value)
         for key, value in data.items()
-        if key in OVERRIDABLE and isinstance(value, str) and value.strip()
+        if key in ALL_OVERRIDABLE and isinstance(value, str) and value.strip()
     }
 
 
@@ -100,7 +131,7 @@ def save_overrides(overrides: dict[str, str]) -> None:
     payload = {
         key: str(value).strip()
         for key, value in overrides.items()
-        if key in OVERRIDABLE and str(value).strip()
+        if key in ALL_OVERRIDABLE and str(value).strip()
     }
     OVERRIDES_FILE.parent.mkdir(parents=True, exist_ok=True)
     tmp = OVERRIDES_FILE.with_suffix(".json.tmp")
@@ -118,7 +149,7 @@ def apply_overrides() -> dict[str, str]:
     """
     overrides = load_overrides()
     applied: dict[str, str] = {}
-    for field, env_name in OVERRIDABLE.items():
+    for field, env_name in ALL_OVERRIDABLE.items():
         if env_var_is_external(env_name):
             logger.debug("%s is pinned by the process environment; override skipped", env_name)
             continue
@@ -216,8 +247,86 @@ def describe_paths() -> dict[str, Any]:
     return {
         "paths": list(current.values()),
         "overrides_file": str(OVERRIDES_FILE),
-        "overrides": overrides,
+        # Paths only. runtime.json also holds the Embedding API key, and this
+        # endpoint's response ends up in the browser.
+        "overrides": {k: v for k, v in overrides.items() if k in OVERRIDABLE},
         "overrides_applied": {
             field: str(getattr(settings, field) or "") for field in OVERRIDABLE
         },
+    }
+
+
+def _mask(secret: str) -> str:
+    """Enough of a key to recognise it, never enough to use it."""
+    if len(secret) <= 4:
+        return "已设置"
+    return f"{secret[:3]}…{secret[-4:]}"
+
+
+def describe_embed() -> dict[str, Any]:
+    """State of the hand-entered Embedding API, with the key masked.
+
+    Reports which provider embeddings will actually go through, so "留空" is
+    never ambiguous: the card can say "现在用本地 mock 向量" before the user
+    wonders why similarity search looks odd.
+    """
+    from app.services.llm.router import ModelRouter
+
+    overrides = load_overrides()
+    key = overrides.get("embed_api_key", "")
+    base = overrides.get("embed_api_base", "")
+    model = overrides.get("embed_model", "")
+    active = bool(base and model)
+
+    effective_provider = "mock"
+    effective_model = ""
+    note: str | None = None
+    try:
+        router = ModelRouter()
+        provider = router.provider_for("embed")
+        effective_provider = provider.name
+        effective_model = provider.model_for("embed") or ""
+        note = router.embed_note
+    except Exception as exc:  # diagnostics only
+        note = f"{type(exc).__name__}: {exc}"
+
+    if not active:
+        note = (
+            "未填写 Embedding API，向量化走自动回退；没有任何可用向量供应商时"
+            "使用本地 mock 向量（可离线运行，但语义检索精度有限）。"
+        )
+    elif effective_provider != "embed_override":
+        note = note or "Embedding API 已保存，但当前没有被选用，请检查下方的路由表。"
+
+    return {
+        "fields": [
+            {
+                **EMBED_META["embed_api_base"],
+                "key": "embed_api_base",
+                "env_var": EMBED_KEYS["embed_api_base"],
+                "value": base,
+                "locked_by_env": env_var_is_external(EMBED_KEYS["embed_api_base"]),
+            },
+            {
+                **EMBED_META["embed_api_key"],
+                "key": "embed_api_key",
+                "env_var": EMBED_KEYS["embed_api_key"],
+                "value": "",  # never echo a secret back
+                "hint_value": _mask(key) if key else None,
+                "locked_by_env": env_var_is_external(EMBED_KEYS["embed_api_key"]),
+            },
+            {
+                **EMBED_META["embed_model"],
+                "key": "embed_model",
+                "env_var": EMBED_KEYS["embed_model"],
+                "value": model,
+                "locked_by_env": env_var_is_external(EMBED_KEYS["embed_model"]),
+            },
+        ],
+        "configured": active,
+        "active": active,
+        "effective_provider": effective_provider,
+        "effective_model": effective_model,
+        "note": note,
+        "overrides_file": str(OVERRIDES_FILE),
     }

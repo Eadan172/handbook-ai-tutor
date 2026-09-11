@@ -1,13 +1,13 @@
 "use client";
 
 import { useQuery } from "@tanstack/react-query";
-import { useState } from "react";
-import { ChevronDown, ChevronRight, Layers, ScanLine } from "lucide-react";
+import { useMemo, useState } from "react";
+import { ChevronDown, ChevronRight, Clock, CornerDownRight, Layers, ScanLine } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { api } from "@/lib/api";
-import { CONTENT_TYPE_LABELS, type SourceStructure } from "@/lib/types";
+import { CONTENT_TYPE_LABELS, type OutlineEntry, type SourceStructure } from "@/lib/types";
 
 /** Colour per content type, so the split is readable at a glance. */
 const TYPE_TONE: Record<string, string> = {
@@ -20,6 +20,17 @@ const TYPE_TONE: Record<string, string> = {
   reference: "bg-stone-100 text-stone-700",
   outline: "bg-sky-100 text-sky-700",
 };
+
+/** Seconds -> `m:ss` (or `h:mm:ss`), matching the player's own clock. */
+function formatClock(seconds: number | null | undefined): string {
+  if (seconds == null || !Number.isFinite(seconds)) return "—";
+  const total = Math.max(0, Math.floor(seconds));
+  const h = Math.floor(total / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  const s = total % 60;
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return h > 0 ? `${h}:${pad(m)}:${pad(s)}` : `${m}:${pad(s)}`;
+}
 
 function TypeChip({ kind, count }: { kind: string; count: number }) {
   return (
@@ -34,7 +45,45 @@ function TypeChip({ kind, count }: { kind: string; count: number }) {
   );
 }
 
-export function StructurePanel({ sourceId }: { sourceId: string }) {
+type TreeNode = { node: OutlineEntry; index: number; children: TreeNode[] };
+
+/** Flat `level`-tagged list -> nested tree, so L2/L3 sit under their chapter. */
+function buildTree(nodes: OutlineEntry[]): TreeNode[] {
+  const roots: TreeNode[] = [];
+  const stack: TreeNode[] = [];
+  nodes.forEach((node, index) => {
+    const item: TreeNode = { node, index, children: [] };
+    const level = node.level || 1;
+    while (stack.length > 0 && (stack[stack.length - 1].node.level || 1) >= level) stack.pop();
+    if (stack.length > 0) stack[stack.length - 1].children.push(item);
+    else roots.push(item);
+    stack.push(item);
+  });
+  return roots;
+}
+
+function collectKeys(nodes: TreeNode[], into: Set<number>): Set<number> {
+  for (const item of nodes) {
+    into.add(item.index);
+    collectKeys(item.children, into);
+  }
+  return into;
+}
+
+export function StructurePanel({
+  sourceId,
+  kind,
+  onJumpToPage,
+  onSeek,
+}: {
+  sourceId: string;
+  /** Fallback when the structure payload predates the `kind` field. */
+  kind?: string;
+  /** PDF: scroll the embedded viewer to a physical page. */
+  onJumpToPage?: (page: number) => void;
+  /** Recording: move the player's playhead. */
+  onSeek?: (seconds: number) => void;
+}) {
   const [showChunks, setShowChunks] = useState(false);
 
   const structure = useQuery({
@@ -43,6 +92,11 @@ export function StructurePanel({ sourceId }: { sourceId: string }) {
   });
 
   const data = structure.data;
+  const outline = useMemo(() => data?.outline ?? [], [data]);
+  const tree = useMemo(() => buildTree(outline), [outline]);
+  const [collapsed, setCollapsed] = useState<Set<number>>(() => new Set());
+  const allKeys = useMemo(() => collectKeys(tree, new Set<number>()), [tree]);
+
   if (structure.isLoading) {
     return (
       <Card>
@@ -61,7 +115,124 @@ export function StructurePanel({ sourceId }: { sourceId: string }) {
   if (!data) return null;
 
   const counts = data.content_types || {};
-  const chapters = data.outline.filter((n) => n.level === 1);
+  const resolvedKind = data.kind || kind || "pdf";
+  const isVideo = resolvedKind === "video";
+  const isImage = resolvedKind === "image";
+  const chapters = tree.length;
+  let visible = 0;
+  const walk = (nodes: TreeNode[]) => {
+    for (const item of nodes) {
+      visible += 1;
+      if (!collapsed.has(item.index)) walk(item.children);
+    }
+  };
+  walk(tree);
+
+  const toggle = (index: number) =>
+    setCollapsed((prev) => {
+      const next = new Set(prev);
+      if (next.has(index)) next.delete(index);
+      else next.add(index);
+      return next;
+    });
+
+  const renderNodes = (nodes: TreeNode[]) =>
+    nodes.map((item) => {
+      const { node, index, children } = item;
+      const hasChildren = children.length > 0;
+      const open = hasChildren && !collapsed.has(index);
+      const startTime = node.start_time ?? null;
+      const printable =
+        node.printed_page ?? (node.page_number ? node.page_number : null);
+      const jumpable = isVideo
+        ? Boolean(onSeek) && startTime != null
+        : !isImage && Boolean(onJumpToPage) && printable != null;
+
+      const activate = () => {
+        if (isVideo) {
+          if (onSeek && startTime != null) onSeek(startTime);
+          return;
+        }
+        if (onJumpToPage && printable != null) onJumpToPage(printable);
+      };
+
+      return (
+        <div key={index}>
+          <div
+            className="flex items-center gap-1.5 rounded px-1.5 py-1 transition-colors hover:bg-background"
+            style={{ paddingLeft: `${(node.level - 1) * 16 + 6}px` }}
+          >
+            {hasChildren ? (
+              <button
+                type="button"
+                onClick={() => toggle(index)}
+                aria-expanded={open}
+                aria-label={open ? "收起子章节" : "展开子章节"}
+                className="flex h-4 w-4 shrink-0 items-center justify-center rounded text-primary hover:bg-primary/10"
+              >
+                {open ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
+              </button>
+            ) : (
+              <span
+                className={`flex h-4 w-4 shrink-0 items-center justify-center ${
+                  node.level === 1 ? "text-primary" : "text-muted-foreground/50"
+                }`}
+              >
+                {node.level === 1 ? (
+                  <ChevronDown className="h-3 w-3" />
+                ) : (
+                  <CornerDownRight className="h-3 w-3" />
+                )}
+              </span>
+            )}
+
+            <span className="shrink-0 rounded bg-muted px-1.5 text-[10px] text-muted-foreground">
+              L{node.level}
+            </span>
+
+            <button
+              type="button"
+              onClick={activate}
+              disabled={!jumpable}
+              title={
+                jumpable
+                  ? isVideo
+                    ? `跳转到 ${formatClock(startTime)}`
+                    : `跳转到 PDF 第 ${printable} 页`
+                  : "该条目没有可跳转的位置"
+              }
+              className={`min-w-0 truncate rounded px-1 text-left ${
+                jumpable
+                  ? "text-foreground/90 underline-offset-4 hover:text-primary hover:underline"
+                  : "text-foreground/70"
+              }`}
+            >
+              {node.number ? `${node.number} ` : ""}
+              {node.title || "（无标题）"}
+            </button>
+
+            <span className="ml-auto shrink-0 tabular-nums text-muted-foreground">
+              {isVideo ? (
+                <>
+                  {formatClock(startTime)}
+                  {node.end_time != null && startTime != null
+                    ? `–${formatClock(node.end_time)}`
+                    : ""}
+                </>
+              ) : (
+                <>
+                  书内 p.{node.printed_page ?? "?"}
+                  {node.page_end != null && node.page_number != null
+                    ? `–${(node.printed_page ?? 0) + (node.page_end - node.page_number)}`
+                    : ""}
+                </>
+              )}
+            </span>
+          </div>
+          {open && <div className="border-l border-dashed border-border/70">{renderNodes(children)}</div>}
+        </div>
+      );
+    });
 
   return (
     <Card>
@@ -73,69 +244,83 @@ export function StructurePanel({ sourceId }: { sourceId: string }) {
           <div>
             <CardTitle className="text-base">文档结构解析</CardTitle>
             <CardDescription>
-              正文、标题、图注、公式、表格、图内文字被分别识别并标注归属。页码同时给出「书内页码」与「PDF 页码」，
-              两者相差 {data.page_offset != null ? Math.abs(data.page_offset) : "?"} 页（前置页所致）。
+              {isVideo
+                ? "语音转写被切分成带时间戳的片段，再归并成章节。点击章节可直接把播放进度跳到该处。"
+                : "正文、标题、图注、公式、表格、图内文字被分别识别并标注归属。页码同时给出「书内页码」与「PDF 页码」，两者相差 " +
+                  (data.page_offset != null ? Math.abs(data.page_offset) : "?") +
+                  " 页（前置页所致）。点击条目标题可跳转到对应页。"}
             </CardDescription>
           </div>
         </div>
       </CardHeader>
       <CardContent className="space-y-4 text-sm">
         <div className="flex flex-wrap items-center gap-2">
-          <Badge variant="outline">
-            <ScanLine className="h-3 w-3" />
-            PDF 共 {data.page_count ?? "?"} 页
-          </Badge>
-          {data.page_offset != null && (
-            <Badge variant="outline">
-              书内页码 = PDF 页码 {data.page_offset >= 0 ? "+" : "−"}
-              {Math.abs(data.page_offset)}
-            </Badge>
+          {isVideo ? (
+            <>
+              <Badge variant="outline">
+                <Clock className="h-3 w-3" />
+                时长 {formatClock(data.duration)}
+              </Badge>
+              <Badge variant="outline">章节 {chapters}</Badge>
+            </>
+          ) : (
+            <>
+              <Badge variant="outline">
+                <ScanLine className="h-3 w-3" />
+                PDF 共 {data.page_count ?? "?"} 页
+              </Badge>
+              {data.page_offset != null && (
+                <Badge variant="outline">
+                  书内页码 = PDF 页码 {data.page_offset >= 0 ? "+" : "−"}
+                  {Math.abs(data.page_offset)}
+                </Badge>
+              )}
+              <Badge variant="outline">章节 {chapters}</Badge>
+            </>
           )}
           <Badge variant="outline">切块 {data.chunk_total}</Badge>
-          <Badge variant="outline">章节 {chapters.length}</Badge>
+          {chapters > 0 && visible < allKeys.size && (
+            <button
+              type="button"
+              className="text-xs text-primary underline-offset-4 hover:underline"
+              onClick={() => setCollapsed(new Set())}
+            >
+              展开全部
+            </button>
+          )}
+          {chapters > 0 && visible === allKeys.size && allKeys.size > 1 && (
+            <button
+              type="button"
+              className="text-xs text-muted-foreground underline-offset-4 hover:underline"
+              onClick={() => setCollapsed(new Set(allKeys))}
+            >
+              收起全部
+            </button>
+          )}
         </div>
 
         <div className="flex flex-wrap gap-1.5">
           {Object.entries(counts)
             .sort((a, b) => b[1] - a[1])
-            .map(([kind, count]) => (
-              <TypeChip key={kind} kind={kind} count={count} />
+            .map(([type, count]) => (
+              <TypeChip key={type} kind={type} count={count} />
             ))}
         </div>
 
         {data.outline.length > 0 ? (
           <div>
             <p className="mb-1 text-xs font-medium text-muted-foreground">
-              章节树（层级 · 标题 · 书内页码）
+              {isVideo ? "章节（时间轴 · 标题 · 起止时间）" : "章节树（层级 · 标题 · 书内页码）"}
             </p>
             <div className="max-h-72 scroll-smooth-x overflow-y-auto rounded-lg border bg-muted/20 p-3 font-mono text-xs leading-6">
-              {data.outline.slice(0, 200).map((node, i) => (
-                <div
-                  key={`${node.number}-${node.page_number}-${i}`}
-                  className="flex items-baseline gap-2 rounded px-1.5 py-0.5 transition-colors hover:bg-background"
-                  style={{ paddingLeft: `${(node.level - 1) * 14 + 6}px` }}
-                >
-                  {node.level === 1 ? (
-                    <ChevronDown className="h-3 w-3 shrink-0 text-primary" />
-                  ) : (
-                    <ChevronRight className="h-3 w-3 shrink-0 text-muted-foreground/50" />
-                  )}
-                  <span className="shrink-0 rounded bg-muted px-1.5 text-[10px] text-muted-foreground">
-                    L{node.level}
-                  </span>
-                  <span className="text-foreground/90">
-                    {node.number} {node.title}
-                  </span>
-                  <span className="ml-auto text-muted-foreground">
-                    书内 p.{node.printed_page ?? "?"}
-                    {node.page_end != null && node.page_end !== node.page_number
-                      ? `–${(node.printed_page ?? 0) + (node.page_end - node.page_number)}`
-                      : ""}
-                  </span>
-                </div>
-              ))}
+              {renderNodes(tree)}
             </div>
           </div>
+        ) : isVideo ? (
+          <p className="text-xs text-muted-foreground">
+            该录像还没有可用的章节结构：语音转写可能尚未完成或未识别出可用语音。
+            流水线跑完后这里会按时间轴列出章节，点击即可跳转播放位置。
+          </p>
         ) : (
           <p className="text-xs text-muted-foreground">
             未识别出章节结构（该文档可能没有标题层级或目录页）。
@@ -171,6 +356,21 @@ export function StructurePanel({ sourceId }: { sourceId: string }) {
                   >
                     {CONTENT_TYPE_LABELS[chunk.content_type] ?? chunk.content_type}
                   </span>
+                  {chunk.start_time != null && (
+                    <button
+                      type="button"
+                      onClick={() => onSeek?.(chunk.start_time as number)}
+                      disabled={!onSeek}
+                      className={
+                        onSeek
+                          ? "rounded-full bg-primary/10 px-2 py-0.5 tabular-nums text-primary underline-offset-4 hover:underline"
+                          : "rounded-full bg-muted px-2 py-0.5 tabular-nums"
+                      }
+                    >
+                      {formatClock(chunk.start_time)}
+                      {chunk.end_time != null ? `–${formatClock(chunk.end_time)}` : ""}
+                    </button>
+                  )}
                   {chunk.printed_page != null && <Badge>书内 p.{chunk.printed_page}</Badge>}
                   {chunk.page_number != null && chunk.page_number !== chunk.printed_page && (
                     <Badge variant="outline">PDF p.{chunk.page_number}</Badge>

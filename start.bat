@@ -2,9 +2,18 @@
 setlocal enableextensions
 title AI Learning Tutor - Launcher
 
+REM Silent mode (set by start.vbs) and /nobrowser flag
+set "SILENT=0"
+set "NOBROWSER=0"
+if /i "%~1"=="/silent"    set "SILENT=1"
+if /i "%~2"=="/silent"    set "SILENT=1"
+if /i "%~1"=="/nobrowser" set "NOBROWSER=1"
+if /i "%~2"=="/nobrowser" set "NOBROWSER=1"
+
 REM ============================================================
 REM  AI Learning Tutor - one click local launcher
-REM  - Double click to start backend + frontend and open the browser
+REM  - Double-click start.vbs for a fully silent launch (no console window)
+REM  - Double-clicking start.bat directly also works, but shows this launcher text
 REM  - Closing this window does NOT stop services and does NOT erase data
 REM  - Data lives in: backend\tutor.db  and  data\storage\
 REM ============================================================
@@ -50,6 +59,7 @@ if exist "%ROOT%\tools\ffmpeg\bin\ffmpeg.exe" set "PATH=%ROOT%\tools\ffmpeg\bin;
 REM ---------- 4. Runtime environment (all data is persisted on disk) ----------
 if not exist "%DATA%" mkdir "%DATA%" >nul 2>&1
 if not exist "%DATA%\storage" mkdir "%DATA%\storage" >nul 2>&1
+if not exist "%ROOT%\tmp" mkdir "%ROOT%\tmp" >nul 2>&1
 
 call :tofwds "%DBFILE%"
 set "DATABASE_URL=sqlite+aiosqlite:///%FWDS%"
@@ -79,8 +89,8 @@ set "NEXT_PUBLIC_API_BASE_URL=http://localhost:8000"
 REM ---------- 5. Start backend ----------
 call :port_busy 8000
 if "%BUSY%"=="1" goto :be_running
-echo   [start] backend api on port 8000 ...
-start "AI Tutor Backend (8000)" /D "%BE%" cmd /k "python -m uvicorn app.main:app --host 127.0.0.1 --port 8000"
+echo   [start] backend api on port 8000 ... (logs: tmp\backend8000.log)
+powershell -NoProfile -Command "Start-Process -FilePath '%PYSITE%' -ArgumentList '-m','uvicorn','app.main:app','--host','127.0.0.1','--port','8000' -WorkingDirectory '%BE%' -WindowStyle Hidden -RedirectStandardOutput '%ROOT%\tmp\backend8000.log' -RedirectStandardError '%ROOT%\tmp\backend8000.err.log'"
 goto :be_done
 :be_running
 REM A listener on 8000 is not proof of a working API. If the process was started
@@ -114,8 +124,8 @@ echo     powershell -NoProfile -Command "Get-NetTCPConnection -LocalPort 8000 -S
 echo.
 echo   Most likely cause: the API was started by hand WITHOUT the
 echo   local env vars, so it tried to reach the postgres / redis
-echo   hosts in .env and exited. Always start it with this script,
-echo   or with:  bash scripts/run_local_backend.sh
+echo   hosts in .env and exited. Always start it by double-clicking
+echo   start.vbs (which runs this script).
 echo   ************************************************************
 echo.
 goto :be_done
@@ -124,8 +134,8 @@ goto :be_done
 REM ---------- 6. Start frontend ----------
 call :port_busy 3000
 if "%BUSY%"=="1" goto :fe_running
-echo   [start] frontend on port 3000 ...
-start "AI Tutor Frontend (3000)" /D "%FE%" cmd /k "node node_modules\next\dist\bin\next start -p 3000"
+echo   [start] frontend on port 3000 ... (logs: tmp\frontend3000.log)
+powershell -NoProfile -Command "Start-Process -FilePath '%NODE_DIR%\node.exe' -ArgumentList 'node_modules\next\dist\bin\next','start','-p','3000' -WorkingDirectory '%FE%' -WindowStyle Hidden -RedirectStandardOutput '%ROOT%\tmp\frontend3000.log' -RedirectStandardError '%ROOT%\tmp\frontend3000.err.log'"
 goto :fe_done
 :fe_running
 echo   [reuse] port 3000 already listening, keeping the running frontend
@@ -138,7 +148,7 @@ call :wait_url "http://127.0.0.1:3000/" "frontend ui"
 
 REM ---------- 8. Open the browser ----------
 echo.
-if /i "%~1"=="/nobrowser" goto :no_browser
+if "%NOBROWSER%"=="1" goto :no_browser
 echo   [open] browser http://localhost:3000
 start "" "http://localhost:3000"
 goto :done
@@ -156,11 +166,10 @@ echo.
 echo   Data     : backend\tutor.db   (accounts, sources, quizzes)
 echo              data\storage\      (uploaded files)
 echo   Closing this window keeps services and data intact.
-echo   To stop, close the "AI Tutor Backend" and
-echo   "AI Tutor Frontend" windows.
+echo   To stop, run stop.bat (services now run hidden).
 echo ============================================================
 echo.
-pause
+if "%SILENT%"=="0" pause
 goto :eof
 
 REM ============================================================
@@ -237,6 +246,6 @@ goto :halt
 
 :halt
 echo.
-pause
+if "%SILENT%"=="0" pause
 endlocal
 exit /b 1

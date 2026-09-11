@@ -49,6 +49,17 @@ MODALITY_ENV = {
     "vision": "LLM_PROVIDER_VISION",
 }
 
+#: The Embedding API filled in on the settings page. It lives outside
+#: providers.yaml because it is entered at runtime, and it is registered as a
+#: synthetic provider spec so readiness checks and the diagnostics table treat
+#: it exactly like a vendor from the file.
+EMBED_OVERRIDE_NAME = "embed_override"
+EMBED_OVERRIDE_ENV = {
+    "base": "EMBED_API_BASE",
+    "key": "EMBED_API_KEY",
+    "model": "EMBED_MODEL",
+}
+
 # Order used by auto-detection when no provider is pinned explicitly.
 AUTO_ORDER = ("dashscope", "deepseek", "siliconflow", "openai", "anthropic")
 
@@ -94,6 +105,10 @@ class ModelRouter:
         self.session = session
         self.settings = get_settings()
         self.config = self._load_config()
+        #: Specs that do not come from providers.yaml. Registered before the
+        #: providers are built so every lookup below sees them like any vendor.
+        self._synthetic_specs: dict[str, dict] = {}
+        self._register_embed_override()
         self.providers = self._build_providers()
         self.task_routes: dict[str, str] = {
             str(k): str(v) for k, v in (self.config.get("task_routes") or {}).items()
@@ -210,9 +225,32 @@ class ModelRouter:
             return {}
         return {str(k): str(v) for k, v in data.items()}
 
+    def _register_embed_override(self) -> None:
+        """Turn the settings-page Embedding API into a provider spec.
+
+        Only registered when both an address and a model are present: half a
+        configuration would route embeddings at a URL that cannot answer, which
+        is worse than falling back to mock. A blank key is allowed on purpose —
+        a locally hosted embeddings server usually has no auth.
+        """
+        base = (os.environ.get(EMBED_OVERRIDE_ENV["base"]) or "").strip()
+        model = (os.environ.get(EMBED_OVERRIDE_ENV["model"]) or "").strip()
+        if not base or not model:
+            return
+        spec: dict = {
+            "type": "openai_compatible",
+            "base_url": base,
+            "models": {"default": model, "embed": model},
+            "source": "settings",
+        }
+        if (os.environ.get(EMBED_OVERRIDE_ENV["key"]) or "").strip():
+            spec["api_key_env"] = EMBED_OVERRIDE_ENV["key"]
+        self._synthetic_specs[EMBED_OVERRIDE_NAME] = spec
+
     def _build_providers(self) -> dict[str, LLMProvider]:
         built: dict[str, LLMProvider] = {"mock": MockProvider()}
-        for name, spec in (self.config.get("providers") or {}).items():
+        specs = {**(self.config.get("providers") or {}), **self._synthetic_specs}
+        for name, spec in specs.items():
             spec = spec or {}
             ptype = spec.get("type", "mock")
             models = spec.get("models") or {}
@@ -280,7 +318,9 @@ class ModelRouter:
 
     def provider_for(self, task: str) -> LLMProvider:
         name = self.provider_name_for(task)
-        if modality_for(task) == "embed" and not self._has_embed_model(name):
+        if modality_for(task) == "embed" and (
+            EMBED_OVERRIDE_NAME in self.providers or not self._has_embed_model(name)
+        ):
             name = self._resolve_embed_provider(name)
         provider = self.providers.get(name)
         if provider is None:
@@ -297,9 +337,15 @@ class ModelRouter:
 
         Most chat vendors (DeepSeek) expose no /embeddings endpoint. Failing the
         whole ingest over that would be worse than falling back, so we walk:
-        explicit LLM_PROVIDER_EMBED -> any keyed provider with an embed model ->
-        local deterministic vectors. The chosen name lands in the task message.
+        the Embedding API entered in 设置 -> explicit LLM_PROVIDER_EMBED -> any
+        keyed provider with an embed model -> local deterministic vectors. The
+        chosen name lands in the task message.
         """
+        if EMBED_OVERRIDE_NAME in self.providers:
+            # An explicit, hand-entered endpoint outranks auto-detection: the
+            # person configured it precisely because they wanted it used.
+            self.embed_note = "embeddings via the Embedding API configured in 设置"
+            return EMBED_OVERRIDE_NAME
         explicit = (self.settings.llm_provider_embed or "").strip()
         if explicit and self.providers.get(explicit) and self._has_embed_model(explicit):
             self.embed_note = None
@@ -318,7 +364,11 @@ class ModelRouter:
         return "mock"
 
     def _spec_for(self, name: str) -> dict:
-        return ((self.config.get("providers") or {}).get(name) or {}) if name != "mock" else {}
+        if name == "mock":
+            return {}
+        if name in self._synthetic_specs:
+            return self._synthetic_specs[name]
+        return ((self.config.get("providers") or {}).get(name) or {})
 
     def _validate_ready(self, name: str, task: str) -> None:
         if name == "mock":
@@ -348,7 +398,9 @@ class ModelRouter:
             modality = modality_for(task)
             try:
                 name = self.provider_name_for(task)
-                if modality == "embed" and not self._has_embed_model(name):
+                if modality == "embed" and (
+                    EMBED_OVERRIDE_NAME in self.providers or not self._has_embed_model(name)
+                ):
                     self.embed_note = None
                     name = self._resolve_embed_provider(name)
                 provider = self.providers.get(name)

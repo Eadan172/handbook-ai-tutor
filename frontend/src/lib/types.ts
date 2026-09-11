@@ -42,9 +42,13 @@ export type OutlineEntry = {
   level: number;
   number: string;
   title: string;
-  page_number: number;
-  printed_page: number | null;
-  page_end: number | null;
+  /** Page-based sources (PDF). Recordings leave this at 0. */
+  page_number?: number | null;
+  printed_page?: number | null;
+  page_end?: number | null;
+  /** Recording only: the position the player should seek to, in seconds. */
+  start_time?: number | null;
+  end_time?: number | null;
 };
 
 export type StructureChunk = {
@@ -56,11 +60,17 @@ export type StructureChunk = {
   printed_page: number | null;
   locator: string | null;
   heading_level: number | null;
+  start_time?: number | null;
+  end_time?: number | null;
   preview: string;
 };
 
 export type SourceStructure = {
   source_id: string;
+  /** pdf | video | image — decides which half of the panel is shown. */
+  kind?: string;
+  /** Recording only: total length in seconds. */
+  duration?: number | null;
   page_offset: number | null;
   page_count: number | null;
   outline: OutlineEntry[];
@@ -302,5 +312,41 @@ export type LlmTestOut = {
   provider: string | null;
   model: string | null;
   reply: string | null;
+  error: string | null;
+};
+
+/** One editable field of the hand-entered Embedding API. `value` is never the key. */
+export type EmbedField = {
+  key: "embed_api_base" | "embed_api_key" | "embed_model";
+  env_var: string;
+  label: string;
+  hint: string;
+  placeholder: string;
+  value: string;
+  /** Masked preview of an already-saved secret, e.g. "sk-…4f2a". */
+  hint_value?: string | null;
+  locked_by_env: boolean;
+};
+
+export type EmbedOut = {
+  fields: EmbedField[];
+  /** Address + model were both filled in. */
+  configured: boolean;
+  active: boolean;
+  /** Provider that will actually serve vectors right now. */
+  effective_provider: string;
+  effective_model: string;
+  note: string | null;
+  overrides_file: string;
+  changed: string[];
+  warnings: string[];
+};
+
+export type EmbedTestOut = {
+  ok: boolean;
+  provider: string | null;
+  model: string | null;
+  dim: number;
+  note: string | null;
   error: string | null;
 };

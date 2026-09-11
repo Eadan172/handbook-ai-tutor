@@ -80,7 +80,7 @@ async def plan_and_retrieve(
             content_type=h.content_type,
             start_time=h.start_time,
             end_time=h.end_time,
-            quote=h.content[:400],
+            quote=h.content,
             score=h.score,
         )
         for h in hits
@@ -129,7 +129,7 @@ def format_excerpts(citations: list[Citation]) -> str:
         if c.section_title:
             meta.append(f"section={c.section_title}")
         header = " ".join(meta)
-        lines.append(f"[{header}]\n{c.quote}")
+        lines.append(f"[{header}]\n{c.quote[:400]}")
     return "\n\n".join(lines)
 
 

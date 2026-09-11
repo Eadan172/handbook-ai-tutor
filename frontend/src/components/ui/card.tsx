@@ -27,8 +27,11 @@ export function Card({
     <div
       className={cn(
         base,
-        interactive &&
-          "hover-lift cursor-pointer transition-shadow hover:shadow-lift",
+        // `hover-lift` already carries its own explicit transition list.
+        // Adding Tailwind's `transition-shadow` here would override it (it sits
+        // in a later layer), leaving `transform` un-animated — the lift would
+        // then snap instead of glide, and hover in/out looked like a twitch.
+        interactive && "hover-lift cursor-pointer hover:shadow-lift",
         className
       )}
       {...props}

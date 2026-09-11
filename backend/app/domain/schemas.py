@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from uuid import UUID
 
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, EmailStr, Field, model_validator
 
 
 class RegisterRequest(BaseModel):
@@ -46,16 +46,38 @@ class SourceOut(BaseModel):
 
     model_config = {"from_attributes": True}
 
+    @model_validator(mode="after")
+    def _recordings_are_titled_by_their_file_name(self) -> SourceOut:
+        """A recording is always shown under the name the user gave the file.
+
+        The pipeline writes the file name at upload, but the regenerate pass used
+        to overwrite it with the model's headline — which describes the content
+        and belongs on the summary. Enforcing the rule here rather than only at
+        write time means rows corrupted by the old behaviour heal on read, and no
+        call site has to remember the special case.
+        """
+        if self.kind == "video" and self.filename:
+            self.title = self.filename
+        return self
+
 
 class OutlineEntry(BaseModel):
-    """One node of the detected chapter/section tree."""
+    """One node of the detected chapter/section tree.
+
+    A book node carries pages; a recording node carries seconds. Both are
+    optional so the frontend can render whichever the source actually has and
+    use it as a jump target.
+    """
 
     level: int
     number: str = ""
     title: str = ""
-    page_number: int
+    page_number: int = 0
     printed_page: int | None = None
     page_end: int | None = None
+    #: Recording only: the position the player should seek to.
+    start_time: float | None = None
+    end_time: float | None = None
 
 
 class StructureChunkOut(BaseModel):
@@ -69,6 +91,8 @@ class StructureChunkOut(BaseModel):
     printed_page: int | None = None
     locator: str | None = None
     heading_level: int | None = None
+    start_time: float | None = None
+    end_time: float | None = None
     preview: str = ""
 
     model_config = {"from_attributes": True}
@@ -83,13 +107,18 @@ class SourceStructureOut(BaseModel):
     """
 
     source_id: UUID
+    kind: str = "pdf"
+    #: Recording only: total length in seconds, from ffprobe.
+    duration: float | None = None
     page_offset: int | None = None
     page_count: int | None = None
     outline: list[OutlineEntry] = Field(default_factory=list)
     content_types: dict[str, int] = Field(default_factory=dict)
     chunks: list[StructureChunkOut] = Field(default_factory=list)
     chunk_total: int = 0
-    section_index: dict[str, list[int]] = Field(default_factory=dict)
+    #: section title -> where its content sits. A page index for a book, a
+    #: timestamp in seconds for a recording.
+    section_index: dict[str, list[float]] = Field(default_factory=dict)
 
 
 class TaskOut(BaseModel):

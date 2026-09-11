@@ -1,11 +1,16 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from collections.abc import AsyncIterator
 from pathlib import Path
 
 from minio import Minio
 
 from app.core.config import get_settings
+
+#: Bytes handed to the client per write while streaming. 1 MiB keeps a 90-minute
+#: lecture from being materialised in the process while the player scrubs.
+STREAM_BLOCK = 1 << 20
 
 
 class StorageProvider(ABC):
@@ -25,6 +30,23 @@ class StorageProvider(ABC):
     async def delete_bytes(self, key: str) -> bool:
         """Remove one stored object. Returns True when something was removed."""
         raise NotImplementedError
+
+    async def size(self, key: str) -> int | None:
+        """Object size in bytes, or None when the backend cannot report it."""
+        return None
+
+    async def iter_range(
+        self, key: str, start: int, length: int, block: int = STREAM_BLOCK
+    ) -> AsyncIterator[bytes]:
+        """Yield `length` bytes starting at `start`.
+
+        Default implementation slices a full read; backends that can seek
+        override it so a byte range never costs a whole-file read.
+        """
+        data = await self.get_bytes(key)
+        end = min(len(data), start + length)
+        for offset in range(start, end, block):
+            yield data[offset : min(offset + block, end)]
 
 
 class LocalStorage(StorageProvider):
@@ -50,6 +72,26 @@ class LocalStorage(StorageProvider):
 
     async def get_bytes(self, key: str) -> bytes:
         return self._resolve(key).read_bytes()
+
+    async def size(self, key: str) -> int | None:
+        try:
+            return self._resolve(key).stat().st_size
+        except FileNotFoundError:
+            return None
+
+    async def iter_range(
+        self, key: str, start: int, length: int, block: int = STREAM_BLOCK
+    ) -> AsyncIterator[bytes]:
+        path = self._resolve(key)
+        with path.open("rb") as handle:
+            handle.seek(start)
+            remaining = length
+            while remaining > 0:
+                piece = handle.read(min(block, remaining))
+                if not piece:
+                    break
+                remaining -= len(piece)
+                yield piece
 
     async def delete_bytes(self, key: str) -> bool:
         path = self._resolve(key)
@@ -118,6 +160,36 @@ class MinioStorage(StorageProvider):
                 resp.release_conn()
 
         return await to_thread(_get)
+
+    async def size(self, key: str) -> int | None:
+        from asyncio import to_thread
+
+        def _stat() -> int | None:
+            from minio.error import S3Error
+
+            try:
+                return self.client.stat_object(self.bucket, key).size
+            except S3Error:
+                return None
+
+        return await to_thread(_stat)
+
+    async def iter_range(
+        self, key: str, start: int, length: int, block: int = STREAM_BLOCK
+    ) -> AsyncIterator[bytes]:
+        """Ask S3 for exactly the byte range the browser requested."""
+        from asyncio import to_thread
+
+        resp = await to_thread(self.client.get_object, self.bucket, key, None, start, length)
+        try:
+            while True:
+                piece = await to_thread(resp.read, block)
+                if not piece:
+                    break
+                yield piece
+        finally:
+            await to_thread(resp.close)
+            await to_thread(resp.release_conn)
 
     async def delete_bytes(self, key: str) -> bool:
         from asyncio import to_thread

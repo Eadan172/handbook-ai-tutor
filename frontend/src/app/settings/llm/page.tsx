@@ -22,6 +22,7 @@ import {
   XCircle,
 } from "lucide-react";
 import { AppHeader } from "@/components/app-header";
+import { EmbedSettings } from "@/components/embed-settings";
 import { PathSettings } from "@/components/path-settings";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -204,6 +205,8 @@ export default function LlmSettingsPage() {
         </div>
 
         <PathSettings />
+
+        <EmbedSettings />
 
         <Card className="overflow-hidden">
           <CardHeader className="pb-3">
