@@ -30,10 +30,16 @@ npm-debug.log*
 # Data / runtime
 data/
 .tmp/
+tmp/
 *.db
 *.sqlite
 uploads/
 storage/
+
+# Path overrides written by the 模型路由诊断 page (storage root / providers.yaml).
+# Machine-specific, must never be committed.
+backend/config/runtime.json
+backend/config/runtime.json.tmp
 
 # IDE
 .idea/
@@ -43,10 +49,35 @@ storage/
 # OS
 .DS_Store
 
-# Samples generated locally
-samples/*.mp4
-samples/*.pdf
-!samples/.gitkeep
+# Root-level learning media (user's own study materials must never be uploaded)
+/*.mp4
+/*.pdf
+/*.png
+/*.jpg
+/*.jpeg
+/*.webp
+
+# Local tool binaries (ffmpeg etc., downloaded on demand)
+tools/
+
+# E2E test outputs (LLM-generated notes / Q&A / quiz records about user materials)
+test-outputs/
+test/
+
+# TypeScript incremental build cache
+*.tsbuildinfo
+
+# OCR recognition models: ~10 MB ONNX files fetched on demand.
+# Regenerate with: python backend/scripts/fetch_ocr_models.py --lang japan
+backend/models/ocr/*.onnx
+backend/models/ocr/*.part
 
 # Alembic
 # keep versions
+
+# Local verification: service logs and the throwaway output of the acceptance
+# scripts (_e2e_layout.py, _check_llm_login.py). The scripts themselves are
+# tracked; only their logs are noise.
+backend/_uvicorn.log
+backend/_e2e_layout.log
+frontend/_next.log

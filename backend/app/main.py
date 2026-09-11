@@ -9,8 +9,15 @@ from app.api import api_router
 from app.api.health import router as health_router
 from app.core.config import get_settings
 from app.core.db import engine
+from app.core.migrate import ensure_sqlite_schema
+from app.core.runtime_paths import apply_overrides
 from app.models import Base
 from app.services.storage import get_storage
+
+# Before anything reads settings: fold the paths saved from the settings page
+# (storage root, providers.yaml) back in. Genuinely-set process environment
+# variables still win over these.
+apply_overrides()
 
 
 @asynccontextmanager
@@ -19,6 +26,11 @@ async def lifespan(app: FastAPI):
     if settings.is_sqlite:
         async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
+        # Bring pre-existing SQLite databases up to the current schema without
+        # dropping anything: create_all never alters an existing table.
+        applied = await ensure_sqlite_schema(engine)
+        if applied:
+            print(f"[migrate] sqlite schema upgraded: {', '.join(applied)}")
     try:
         await get_storage().ensure_ready()
     except Exception:

@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.chunk import DocumentChunk
 from app.models.knowledge import KnowledgePoint, SourceSummary
 from app.prompts import load_prompt
-from app.services.chunking import format_excerpts
+from app.services.chunking import format_document_excerpts
 from app.services.llm.base import ChatMessage
 from app.services.llm.router import ModelRouter
 from app.utils.jsonutil import parse_model
@@ -60,12 +60,14 @@ async def generate_summary_and_knowledge(
         .all()
     )
     known = {str(c.id) for c in chunks}
-    excerpts = format_excerpts(chunks, max_chars=7000)
+    # Structure-first sampling, so a 600-page book is summarised from its whole
+    # shape instead of its cover page.
+    excerpts = format_document_excerpts(chunks, max_chars=11000)
 
     summary_result = await router.complete(
         task="summarize",
         messages=[
-            ChatMessage(role="system", content=load_prompt("summarize.v1.txt")),
+            ChatMessage(role="system", content=load_prompt("summarize.v2.txt")),
             ChatMessage(role="user", content=excerpts),
         ],
         user_id=user_id,
@@ -85,14 +87,14 @@ async def generate_summary_and_knowledge(
         title=parsed_summary.title,
         overview=parsed_summary.overview,
         outline_json=json.dumps(parsed_summary.outline, ensure_ascii=False),
-        prompt_version="summarize.v1",
+        prompt_version="summarize.v2",
     )
     session.add(summary)
 
     knowledge_result = await router.complete(
         task="extract_knowledge",
         messages=[
-            ChatMessage(role="system", content=load_prompt("extract_knowledge.v1.txt")),
+            ChatMessage(role="system", content=load_prompt("extract_knowledge.v2.txt")),
             ChatMessage(role="user", content=excerpts),
         ],
         user_id=user_id,

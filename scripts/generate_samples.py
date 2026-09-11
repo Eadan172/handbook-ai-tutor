@@ -11,8 +11,8 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "backend"))
 from app.utils.sample_pdf import make_text_pdf  # noqa: E402
 
-SAMPLES = ROOT / "samples"
-SAMPLES.mkdir(exist_ok=True)
+SAMPLES = ROOT / "test-outputs" / "inputs"
+SAMPLES.mkdir(parents=True, exist_ok=True)
 
 PDF_TEXT = (
     "Photosynthesis converts light energy into chemical energy. "

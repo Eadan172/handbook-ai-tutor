@@ -19,10 +19,21 @@ class DocumentChunk(Base):
     user_id: Mapped[UUID] = mapped_column(GUID(), ForeignKey("users.id"), index=True)
     ordinal: Mapped[int] = mapped_column(Integer, default=0)
     content: Mapped[str] = mapped_column(Text)
+    #: Physical page in the PDF, 1-based.
     page_number: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    #: Page as printed on the paper. A book's folio is offset from the PDF's
+    #: physical index by the front matter, so "第569页" and "PDF page 596" are
+    #: the same page -- without this column the question cannot be answered.
+    printed_page: Mapped[int | None] = mapped_column(Integer, nullable=True)
     start_time: Mapped[float | None] = mapped_column(Float, nullable=True)
     end_time: Mapped[float | None] = mapped_column(Float, nullable=True)
     locator: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    #: Chapter/section path, e.g. "第3章 指令级并行 > 3.2 分支预测".
+    section_title: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    #: body | heading | caption | formula | table | figure | reference | outline
+    content_type: Mapped[str] = mapped_column(String(32), default="body", nullable=False)
+    #: Set on heading chunks so the outline can be rebuilt without reparsing.
+    heading_level: Mapped[int | None] = mapped_column(Integer, nullable=True)
     embedding: Mapped[list[float] | None] = mapped_column(
         VectorJSON(get_settings().embedding_dim), nullable=True
     )

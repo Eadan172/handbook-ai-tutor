@@ -3,8 +3,37 @@ from __future__ import annotations
 import httpx
 
 from app.core.config import get_settings
-from app.services.llm.base import ChatMessage, EmbedResult, LLMProvider, LLMResult
+from app.services.llm.base import (
+    ChatMessage,
+    EmbedResult,
+    ImagePart,
+    LLMProvider,
+    LLMResult,
+    TextPart,
+)
 from app.services.llm.mock import mock_embed_vectors
+
+
+def _anthropic_content(content) -> str | list[dict]:
+    """Anthropic Messages API content blocks."""
+    if isinstance(content, str):
+        return content
+    blocks: list[dict] = []
+    for part in content:
+        if isinstance(part, TextPart):
+            blocks.append({"type": "text", "text": part.text})
+        elif isinstance(part, ImagePart):
+            blocks.append(
+                {
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": part.mime,
+                        "data": part.base64_payload,
+                    },
+                }
+            )
+    return blocks or ""
 
 
 class AnthropicProvider(LLMProvider):
@@ -28,8 +57,12 @@ class AnthropicProvider(LLMProvider):
         json_mode: bool = False,
     ) -> LLMResult:
         model = self._model_for(task)
-        system = "\n".join(m.content for m in messages if m.role == "system")
-        body_messages = [{"role": m.role, "content": m.content} for m in messages if m.role != "system"]
+        system = "\n".join(m.text() for m in messages if m.role == "system")
+        body_messages = [
+            {"role": m.role, "content": _anthropic_content(m.content)}
+            for m in messages
+            if m.role != "system"
+        ]
         payload: dict = {
             "model": model,
             "max_tokens": 2048,

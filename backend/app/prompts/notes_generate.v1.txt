@@ -1,0 +1,20 @@
+Turn the source summary and knowledge points into a study note the learner can edit.
+
+Return JSON only:
+{
+  "notes": [
+    {
+      "title": "short note title",
+      "anchor": "page number or chapter this note belongs to, or empty",
+      "content": "markdown-ish plain text. Use short paragraphs and '- ' bullets."
+    }
+  ]
+}
+
+Rules:
+- 1 to 3 notes, one per major theme. Do not restate every knowledge point.
+- Write for revision: key ideas, the relationships between them, and one
+  self-check question at the end of each note.
+- Keep each note under 400 words.
+- Use only the supplied material.
+- Prompt version: notes_generate.v1

@@ -1,57 +1,88 @@
 "use client";
 
-import { useMutation, useQuery } from "@tanstack/react-query";
+import Link from "next/link";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useParams, useRouter } from "next/navigation";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import {
+  ArrowLeft,
+  CheckCircle2,
+  Download,
+  Eye,
+  FileJson,
+  History,
+  ListChecks,
+  Loader2,
+  Send,
+  Sparkles,
+  Upload,
+  XCircle,
+} from "lucide-react";
 import { AppHeader } from "@/components/app-header";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Textarea } from "@/components/ui/textarea";
 import { api, useAuth } from "@/lib/api";
+import { QUESTION_TYPE_LABEL, downloadJson, formatTime, pickJsonFile, slugify } from "@/lib/io";
+import type {
+  Attempt,
+  ImportResult,
+  QuestionResult,
+  Quiz,
+  QuizQuestion,
+  QuizRecord,
+  Source,
+} from "@/lib/types";
 
-type Quiz = {
-  id: string;
-  title: string;
-  questions: { id: string; ordinal: number; question: string; options: string[] }[];
-};
-
-type Attempt = {
-  score: number;
-  passed: boolean;
-  results: {
-    question_id: string;
-    selected_index: number;
-    correct_index: number;
-    correct: boolean;
-    explanation: string;
-  }[];
-};
+type Draft = { selected_index?: number; text_answer?: string };
+type RecordList = { source_id: string; records: QuizRecord[] };
 
 export default function QuizPage() {
   const params = useParams<{ id: string }>();
   const id = params.id;
   const token = useAuth((s) => s.token);
   const router = useRouter();
-  const [answers, setAnswers] = useState<Record<string, number>>({});
+  const queryClient = useQueryClient();
+  const [drafts, setDrafts] = useState<Record<string, Draft>>({});
   const [result, setResult] = useState<Attempt | null>(null);
+  const [viewing, setViewing] = useState<Attempt | null>(null);
+  const [banner, setBanner] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
 
   useEffect(() => {
     if (!token) router.replace("/login");
   }, [token, router]);
 
+  const source = useQuery({
+    queryKey: ["source", id],
+    queryFn: () => api<Source>(`/api/v1/sources/${id}`),
+    enabled: !!token && !!id,
+    retry: false,
+  });
+
   const quizQuery = useQuery({
     queryKey: ["quiz", id],
     queryFn: () => api<Quiz>(`/api/v1/sources/${id}/quiz`),
-    enabled: !!token,
+    enabled: !!token && !!id,
     retry: false,
+  });
+
+  const records = useQuery({
+    queryKey: ["quiz-records", id],
+    queryFn: () => api<RecordList>(`/api/v1/sources/${id}/quiz/records`),
+    enabled: !!token && !!id,
   });
 
   const generate = useMutation({
     mutationFn: () => api<Quiz>(`/api/v1/sources/${id}/quiz/generate`, { method: "POST" }),
     onSuccess: () => {
       setResult(null);
-      setAnswers({});
+      setViewing(null);
+      setDrafts({});
       void quizQuery.refetch();
+      setBanner({ kind: "ok", text: "已生成新一套练习题" });
     },
+    onError: (err) => setBanner({ kind: "err", text: err instanceof Error ? err.message : "生成失败" }),
   });
 
   const submit = useMutation({
@@ -59,75 +90,588 @@ export default function QuizPage() {
       api<Attempt>(`/api/v1/quizzes/${quizId}/attempt`, {
         method: "POST",
         body: JSON.stringify({
-          answers: Object.entries(answers).map(([question_id, selected_index]) => ({
+          answers: Object.entries(drafts).map(([question_id, d]) => ({
             question_id,
-            selected_index,
+            selected_index: d.selected_index ?? null,
+            text_answer: d.text_answer ?? null,
           })),
         }),
       }),
-    onSuccess: setResult,
+    onSuccess: (attempt) => {
+      setResult(attempt);
+      setViewing(null);
+      void queryClient.invalidateQueries({ queryKey: ["quiz-records", id] });
+      setBanner({
+        kind: "ok",
+        text: `已提交，${attempt.graded_count} 道题生成了 AI 解析`,
+      });
+    },
+    onError: (err) => setBanner({ kind: "err", text: err instanceof Error ? err.message : "提交失败" }),
   });
 
   const quiz = generate.data || quizQuery.data;
+  const sections = useMemo(() => groupBySection(quiz?.questions || []), [quiz]);
+
+  function exportAll() {
+    const payload = {
+      format: "handbook-ai-tutor/quiz-records@1",
+      exported_at: new Date().toISOString(),
+      source: { id: id, filename: source.data?.filename, title: source.data?.title },
+      quiz: quiz ?? null,
+      records: records.data?.records ?? [],
+      current_submission: result ?? null,
+    };
+    downloadJson(`${slugify(source.data?.title || source.data?.filename, "quiz")}-records.json`, payload);
+  }
+
+  const importRecords = useMutation({
+    mutationFn: async (mode: "merge" | "replace") => {
+      const raw = (await pickJsonFile()) as Record<string, unknown>;
+      // Accept either a full source bundle or the lighter quiz-records export.
+      const bundle = ("format" in raw && raw.source && raw.records && !("notes" in raw)
+        ? { ...raw, notes: [], knowledge: [], summary: null, quizzes: raw.quiz ? [raw.quiz] : [] }
+        : raw) as Record<string, unknown>;
+      return api<ImportResult>(`/api/v1/sources/${id}/import`, {
+        method: "POST",
+        body: JSON.stringify({ bundle, mode }),
+      });
+    },
+    onSuccess: (res) => {
+      setBanner({
+        kind: "ok",
+        text: `导入完成：新增题目组 ${res.quizzes_created}、提交记录 ${res.records_created}`,
+      });
+      void queryClient.invalidateQueries({ queryKey: ["quiz-records", id] });
+      void queryClient.invalidateQueries({ queryKey: ["quiz", id] });
+    },
+    onError: (err) => setBanner({ kind: "err", text: err instanceof Error ? err.message : "导入失败" }),
+  });
 
   return (
     <div className="min-h-screen">
       <AppHeader />
-      <main className="mx-auto max-w-3xl space-y-6 px-6 py-8">
-        <div className="flex items-center justify-between">
-          <h1 className="text-2xl font-semibold">Quiz</h1>
-          <Button onClick={() => generate.mutate()} disabled={generate.isPending}>
-            {generate.isPending ? "Generating…" : "Generate quiz"}
-          </Button>
+      <main className="mx-auto max-w-4xl space-y-6 px-4 pb-12 pt-6 sm:px-6">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="flex items-start gap-3">
+            <span className="mt-0.5 flex h-10 w-10 items-center justify-center rounded-xl bg-gradient-brand text-white shadow-soft">
+              <ListChecks className="h-5 w-5" />
+            </span>
+            <div>
+              <h1 className="text-2xl font-semibold tracking-tight">练习题</h1>
+              <p className="text-sm text-muted-foreground">
+                {source.data?.title || source.data?.filename || ""}
+              </p>
+            </div>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <Button asChild size="sm" variant="outline">
+              <Link href={`/sources/${id}`}>
+                <ArrowLeft />
+                返回原文
+              </Link>
+            </Button>
+            <Button
+              size="sm"
+              variant="gradient"
+              onClick={() => generate.mutate()}
+              pending={generate.isPending}
+            >
+              {generate.isPending ? "生成中…" : quiz ? "重新生成" : "生成练习题"}
+            </Button>
+          </div>
         </div>
-        {quizQuery.isError && !quiz && (
-          <p className="text-sm text-muted-foreground">No quiz yet. Generate one from this source.</p>
-        )}
-        {quiz && (
-          <Card>
-            <CardHeader>
-              <CardTitle>{quiz.title}</CardTitle>
-              <CardDescription>Answers stay hidden until you submit.</CardDescription>
-            </CardHeader>
-            <CardContent className="space-y-6">
-              {quiz.questions.map((q, idx) => (
-                <div key={q.id} className="space-y-2">
-                  <p className="font-medium">
-                    {idx + 1}. {q.question}
-                  </p>
-                  <div className="space-y-1">
-                    {q.options.map((opt, i) => (
-                      <label key={i} className="flex items-center gap-2 text-sm">
-                        <input
-                          type="radio"
-                          name={q.id}
-                          checked={answers[q.id] === i}
-                          onChange={() => setAnswers((prev) => ({ ...prev, [q.id]: i }))}
-                        />
-                        {opt}
-                      </label>
-                    ))}
-                  </div>
-                  {result && (
-                    <p className="text-sm text-muted-foreground">
-                      {result.results.find((r) => r.question_id === q.id)?.correct ? "Correct. " : "Incorrect. "}
-                      {result.results.find((r) => r.question_id === q.id)?.explanation}
-                    </p>
-                  )}
-                </div>
-              ))}
-              <Button onClick={() => submit.mutate(quiz.id)} disabled={submit.isPending}>
-                Submit
-              </Button>
-              {result && (
-                <p className="text-sm font-medium">
-                  Score {Math.round(result.score * 100)}% {result.passed ? "· passed" : "· keep practicing"}
-                </p>
+
+        {banner && (
+          <div
+            className={`flex items-start justify-between gap-3 rounded-lg border px-3 py-2.5 text-sm animate-fade-down ${
+              banner.kind === "ok"
+                ? "border-success/30 bg-success/5"
+                : "border-destructive/30 bg-destructive/5"
+            }`}
+          >
+            <div className="flex items-start gap-2">
+              {banner.kind === "ok" ? (
+                <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-success" />
+              ) : (
+                <XCircle className="mt-0.5 h-4 w-4 shrink-0 text-destructive" />
               )}
+              <span className="break-all leading-relaxed">{banner.text}</span>
+            </div>
+            <button
+              className="shrink-0 text-xs text-muted-foreground underline-offset-4 hover:underline"
+              onClick={() => setBanner(null)}
+            >
+              关闭
+            </button>
+          </div>
+        )}
+
+        {quizQuery.isError && !quiz && (
+          <Card>
+            <CardContent className="flex items-center gap-3 py-8 text-sm text-muted-foreground">
+              <Sparkles className="h-4 w-4 text-primary" />
+              还没有练习题。点右上角「生成练习题」，系统会按章节生成混合题型（选择题 + 翻译 / 写作 / 口语）。
             </CardContent>
           </Card>
         )}
+
+        {quiz && (
+          <>
+            <Card>
+              <CardHeader className="pb-3">
+                <div className="flex items-center gap-2">
+                  <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary/10 text-primary">
+                    <ListChecks className="h-4 w-4" />
+                  </span>
+                  <div>
+                    <CardTitle className="text-base">{quiz.title}</CardTitle>
+                    <CardDescription>
+                      章节练习 · {quiz.questions.length} 题 · {quiz.sections.length} 个章节 ·{" "}
+                      {quiz.prompt_version}。提交前不显示答案。
+                    </CardDescription>
+                  </div>
+                </div>
+              </CardHeader>
+              <CardContent className="space-y-8">
+                {sections.map(([section, items]) => (
+                  <div key={section} className="space-y-4">
+                    <div className="flex items-center gap-2 border-b pb-1.5">
+                      <h3 className="text-sm font-semibold">{section}</h3>
+                      <Badge variant="soft">{items.length} 题</Badge>
+                    </div>
+                    {items.map((q) => (
+                      <QuestionInput
+                        key={q.id}
+                        question={q}
+                        draft={drafts[q.id] || {}}
+                        onChange={(d) => setDrafts((prev) => ({ ...prev, [q.id]: d }))}
+                      />
+                    ))}
+                  </div>
+                ))}
+                <div className="flex items-center gap-3 border-t pt-2">
+                  <Button variant="gradient" onClick={() => submit.mutate(quiz.id)} pending={submit.isPending}>
+                    {submit.isPending ? "批改中…" : "提交并生成解析"}
+                    {!submit.isPending && <Send />}
+                  </Button>
+                  <span className="text-xs text-muted-foreground">
+                    提交后会记录时间，并为全部题目生成答案解析。
+                  </span>
+                </div>
+              </CardContent>
+            </Card>
+
+            {result && (
+              <AnswerSheet
+                title="本次提交"
+                attempt={result}
+                onExport={() => {
+                  downloadJson(
+                    `${slugify(quiz.title)}-attempt-${result.id.slice(0, 8)}.json`,
+                    result
+                  );
+                }}
+                onExportSection={(sectionTitle) => {
+                  const payload = {
+                    format: "handbook-ai-tutor/quiz-records@1",
+                    exported_at: new Date().toISOString(),
+                    section: sectionTitle,
+                    source: { id, filename: source.data?.filename, title: source.data?.title },
+                    quiz: {
+                      ...quiz,
+                      questions: quiz.questions.filter(
+                        (q) => (q.section_title || "General") === sectionTitle
+                      ),
+                    },
+                    records: [
+                      {
+                        quiz_title: quiz.title,
+                        score: result.score,
+                        passed: result.passed,
+                        submitted_at: result.submitted_at,
+                        graded_count: result.graded_count,
+                        details: result.results
+                          .filter((r) => (r.section_title || "General") === sectionTitle)
+                          .map((r) => ({
+                            question_id: r.question_id,
+                            ordinal: r.ordinal,
+                            section_title: r.section_title,
+                            question_type: r.question_type,
+                            question: r.question,
+                            selected_index: r.selected_index,
+                            text_answer: r.text_answer,
+                            correct_index: r.correct_index,
+                            correct: r.correct,
+                            verdict: r.verdict,
+                            score: r.score,
+                            reference_answer: r.reference_answer,
+                            ai_explanation: r.ai_explanation,
+                          })),
+                      },
+                    ],
+                  };
+                  downloadJson(`${slugify(quiz.title)}-${slugify(sectionTitle)}.json`, payload);
+                }}
+              />
+            )}
+          </>
+        )}
+
+        <Card>
+          <CardHeader className="pb-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary/10 text-primary">
+                  <History className="h-4 w-4" />
+                </span>
+                <div>
+                  <CardTitle className="text-base">提交记录存档</CardTitle>
+                  <CardDescription>每条记录含提交时间、总分、分章节得分与逐题解析。</CardDescription>
+                </div>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <Button size="sm" variant="outline" onClick={exportAll} disabled={!records.data?.records.length}>
+                  <Download />
+                  导出全部
+                </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => importRecords.mutate("merge")}
+                  pending={importRecords.isPending}
+                >
+                  <Upload />
+                  导入记录
+                </Button>
+              </div>
+            </div>
+          </CardHeader>
+          <CardContent className="space-y-2">
+            {records.isLoading && (
+              <div className="space-y-2">
+                {Array.from({ length: 3 }).map((_, i) => (
+                  <div key={i} className="skeleton h-16 w-full" />
+                ))}
+              </div>
+            )}
+            {!records.isLoading && !records.data?.records.length && (
+              <p className="text-sm text-muted-foreground">还没有提交记录。</p>
+            )}
+            {(records.data?.records || []).map((record) => (
+              <RecordRow
+                key={record.id}
+                record={record}
+                onOpen={async () => {
+                  try {
+                    const attempt = await api<Attempt>(`/api/v1/quiz-attempts/${record.id}`);
+                    setViewing(attempt);
+                    setResult(null);
+                  } catch (err) {
+                    setBanner({
+                      kind: "err",
+                      text: err instanceof Error ? err.message : "读取记录失败",
+                    });
+                  }
+                }}
+                onExport={() =>
+                  downloadJson(
+                    `${slugify(record.quiz_title)}-${formatTime(record.submitted_at).replace(/[: ]/g, "-")}.json`,
+                    record
+                  )
+                }
+              />
+            ))}
+          </CardContent>
+        </Card>
+
+        {viewing && (
+          <AnswerSheet
+            title="历史记录"
+            attempt={viewing}
+            onClose={() => setViewing(null)}
+            onExport={() => downloadJson(`attempt-${viewing.id.slice(0, 8)}.json`, viewing)}
+          />
+        )}
       </main>
+    </div>
+  );
+}
+
+function groupBySection(questions: QuizQuestion[]): [string, QuizQuestion[]][] {
+  const buckets = new Map<string, QuizQuestion[]>();
+  for (const q of [...questions].sort((a, b) => a.ordinal - b.ordinal)) {
+    const key = q.section_title || "General";
+    const list = buckets.get(key);
+    if (list) list.push(q);
+    else buckets.set(key, [q]);
+  }
+  return Array.from(buckets.entries());
+}
+
+function QuestionInput({
+  question,
+  draft,
+  onChange,
+}: {
+  question: QuizQuestion;
+  draft: Draft;
+  onChange: (d: Draft) => void;
+}) {
+  const label = QUESTION_TYPE_LABEL[question.question_type] || question.question_type;
+  const isChoice = question.question_type === "choice" && question.options.length > 0;
+
+  return (
+    <div className="space-y-3 rounded-xl border border-border/60 bg-card/50 p-4 transition-all hover:border-border">
+      <div className="flex flex-wrap items-center gap-2">
+        <Badge variant="soft">{label}</Badge>
+        <p className="font-medium leading-relaxed">
+          {question.ordinal + 1}. {question.question}
+        </p>
+      </div>
+      {question.instructions && (
+        <p className="text-xs text-muted-foreground">{question.instructions}</p>
+      )}
+      {isChoice ? (
+        <div className="space-y-1.5">
+          {question.options.map((option, index) => {
+            const selected = draft.selected_index === index;
+            return (
+              <label
+                key={index}
+                className={[
+                  "flex cursor-pointer items-start gap-3 rounded-lg border px-3 py-2 text-sm",
+                  "transition-all duration-150",
+                  selected
+                    ? "border-primary bg-primary/5 ring-1 ring-primary/30"
+                    : "border-border/60 bg-background hover:border-primary/40 hover:bg-primary/[0.03]",
+                ].join(" ")}
+              >
+                <span
+                  className={[
+                    "mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded-full border-2 transition-colors",
+                    selected ? "border-primary bg-primary" : "border-muted-foreground/40",
+                  ].join(" ")}
+                >
+                  {selected && <span className="h-1.5 w-1.5 rounded-full bg-white" />}
+                </span>
+                <input
+                  type="radio"
+                  name={question.id}
+                  className="sr-only"
+                  checked={selected}
+                  onChange={() => onChange({ selected_index: index })}
+                />
+                <span className="leading-relaxed">
+                  <span className="font-mono text-xs text-muted-foreground">
+                    {String.fromCharCode(65 + index)}.
+                  </span>{" "}
+                  {option}
+                </span>
+              </label>
+            );
+          })}
+        </div>
+      ) : (
+        <Textarea
+          placeholder="在这里输入你的作答（翻译 / 写作 / 口语转写）…"
+          value={draft.text_answer || ""}
+          onChange={(e) => onChange({ text_answer: e.target.value })}
+        />
+      )}
+    </div>
+  );
+}
+
+function AnswerSheet({
+  title,
+  attempt,
+  onClose,
+  onExport,
+  onExportSection,
+}: {
+  title: string;
+  attempt: Attempt;
+  onClose?: () => void;
+  onExport: () => void;
+  onExportSection?: (sectionTitle: string) => void;
+}) {
+  const sections = useMemo(() => {
+    const buckets = new Map<string, QuestionResult[]>();
+    for (const r of [...attempt.results].sort((a, b) => a.ordinal - b.ordinal)) {
+      const key = r.section_title || "General";
+      const list = buckets.get(key);
+      if (list) list.push(r);
+      else buckets.set(key, [r]);
+    }
+    return Array.from(buckets.entries());
+  }, [attempt]);
+
+  return (
+    <Card>
+      <CardHeader className="pb-3">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="flex items-center gap-2">
+            <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-success/15 text-success">
+              <CheckCircle2 className="h-4 w-4" />
+            </span>
+            <div>
+              <CardTitle className="text-base">{title} · 答案解析</CardTitle>
+              <CardDescription>
+                提交时间 {formatTime(attempt.submitted_at)} · 得分 {Math.round(attempt.score * 100)}%
+                {attempt.passed ? " · 通过" : " · 继续加油"} · AI 解析覆盖 {attempt.graded_count} 题
+              </CardDescription>
+            </div>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <Button size="sm" variant="outline" onClick={onExport}>
+              <Download />
+              导出本次记录
+            </Button>
+            {onClose && (
+              <Button size="sm" variant="ghost" onClick={onClose}>
+                收起
+              </Button>
+            )}
+          </div>
+        </div>
+      </CardHeader>
+      <CardContent className="space-y-6">
+        <div className="flex flex-wrap gap-2">
+          {attempt.sections.map((s) => (
+            <Badge
+              key={s.section_title}
+              variant={s.score >= 0.6 ? "success" : "warning"}
+            >
+              {s.section_title}：{s.correct}/{s.total}（{Math.round(s.score * 100)}%）
+            </Badge>
+          ))}
+        </div>
+
+        {sections.map(([sectionTitle, rows]) => (
+          <div key={sectionTitle} className="space-y-3">
+            <div className="flex items-center justify-between gap-2 border-b pb-1.5">
+              <h3 className="text-sm font-semibold">{sectionTitle}</h3>
+              {onExportSection && (
+                <Button size="sm" variant="ghost" onClick={() => onExportSection(sectionTitle)}>
+                  <FileJson />
+                  导出本章节
+                </Button>
+              )}
+            </div>
+            {rows.map((row) => (
+              <ResultRow key={row.question_id} row={row} />
+            ))}
+          </div>
+        ))}
+      </CardContent>
+    </Card>
+  );
+}
+
+function ResultRow({ row }: { row: QuestionResult }) {
+  const label = QUESTION_TYPE_LABEL[row.question_type] || row.question_type;
+  const isChoice = row.question_type === "choice";
+  const userAnswer = isChoice
+    ? row.selected_index === null || row.selected_index === undefined
+      ? "未作答"
+      : String.fromCharCode(65 + row.selected_index)
+    : row.text_answer || "未作答";
+  const rightAnswer = isChoice
+    ? row.correct_index === null || row.correct_index === undefined
+      ? "—"
+      : String.fromCharCode(65 + row.correct_index)
+    : row.reference_answer || "—";
+
+  return (
+    <div
+      className={[
+        "space-y-2 rounded-xl border p-4 transition-colors",
+        row.correct
+          ? "border-success/30 bg-success/5"
+          : "border-destructive/30 bg-destructive/5",
+      ].join(" ")}
+    >
+      <div className="flex flex-wrap items-center gap-2">
+        <Badge variant="soft">{label}</Badge>
+        {row.correct ? (
+          <Badge variant="success">
+            <CheckCircle2 className="h-3 w-3" />
+            正确
+          </Badge>
+        ) : (
+          <Badge variant="destructive">
+            <XCircle className="h-3 w-3" />
+            {row.score !== null ? `${Math.round((row.score || 0) * 100)}%` : "待改进"}
+          </Badge>
+        )}
+        <p className="font-medium text-sm leading-relaxed">
+          {row.ordinal + 1}. {row.question}
+        </p>
+      </div>
+      <p className="text-sm">
+        <span className="text-muted-foreground">你的作答：</span>
+        <span className="whitespace-pre-wrap">{userAnswer}</span>
+      </p>
+      {!row.correct && (
+        <p className="text-sm">
+          <span className="text-muted-foreground">参考答案：</span>
+          <span className="whitespace-pre-wrap">{rightAnswer}</span>
+        </p>
+      )}
+      {row.verdict && (
+        <p className="text-sm">
+          <span className="text-muted-foreground">评语：</span>
+          <span className="whitespace-pre-wrap">{row.verdict}</span>
+        </p>
+      )}
+      <div className="rounded-md bg-muted/50 p-3 text-sm">
+        <span className="text-xs text-muted-foreground">解析：</span>
+        <p className="mt-1 whitespace-pre-wrap">{row.ai_explanation || row.explanation || "（无）"}</p>
+      </div>
+    </div>
+  );
+}
+
+function RecordRow({
+  record,
+  onOpen,
+  onExport,
+}: {
+  record: QuizRecord;
+  onOpen: () => void;
+  onExport: () => void;
+}) {
+  return (
+    <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-border/60 bg-card/50 p-3 transition-colors hover:border-border hover:bg-card">
+      <div className="min-w-0">
+        <p className="truncate text-sm font-medium">{record.quiz_title}</p>
+        <p className="text-xs text-muted-foreground">
+          {formatTime(record.submitted_at)} · 得分 {Math.round(record.score * 100)}%
+          {record.passed ? " · 通过" : ""} · 解析 {record.graded_count} 题
+        </p>
+        {record.sections.length > 0 && (
+          <div className="mt-1 flex flex-wrap gap-1">
+            {record.sections.map((s) => (
+              <Badge
+                key={s.section_title}
+                variant={s.score >= 0.6 ? "success" : "warning"}
+              >
+                {s.section_title} {s.correct}/{s.total}
+              </Badge>
+            ))}
+          </div>
+        )}
+      </div>
+      <div className="flex shrink-0 gap-1">
+        <Button size="sm" variant="ghost" onClick={onOpen}>
+          <Eye />
+          查看解析
+        </Button>
+        <Button size="sm" variant="ghost" onClick={onExport}>
+          <Download />
+          导出
+        </Button>
+      </div>
     </div>
   );
 }
