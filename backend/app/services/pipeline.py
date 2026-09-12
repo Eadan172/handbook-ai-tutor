@@ -545,9 +545,11 @@ class IngestPipeline:
         batch_size = 16
         for i in range(0, len(chunks), batch_size):
             batch = chunks[i : i + batch_size]
+            # SiliconFlow BAAI/bge-m3 returns 400/20015 on ~8k+ char inputs.
+            # A full-book outline chunk can be 20k chars on a long textbook.
             result = await self.router.embed(
                 task="embed",
-                texts=[c.content for c in batch],
+                texts=[(c.content or "")[:8000] for c in batch],
                 user_id=source.user_id,
                 source_id=source.id,
             )

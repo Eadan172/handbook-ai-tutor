@@ -228,7 +228,23 @@ def chunk_document(doc: DocumentLayout) -> list[RawChunk]:
 
     front = outline_chunk(doc)
     if front is not None:
-        chunks.append(front)
+        if len(front.content) > 4000:
+            for i, part in enumerate(
+                _split_window(front.content, size=4000, overlap=200), start=1
+            ):
+                chunks.append(
+                    RawChunk(
+                        content=part,
+                        page_number=front.page_number,
+                        printed_page=front.printed_page,
+                        locator=f"{front.locator}#{i}" if front.locator else f"outline#{i}",
+                        section_title=front.section_title,
+                        content_type=front.content_type,
+                        heading_level=front.heading_level,
+                    )
+                )
+        else:
+            chunks.append(front)
 
     last_caption = ""
     last_caption_page = -1

@@ -263,10 +263,11 @@ def get_stt() -> STTProvider:
     if name in {"siliconflow", "silicon_flow"}:
         try:
             from app.services.stt_siliconflow import SiliconFlowSTT  # type: ignore
-
-            return SiliconFlowSTT()
-        except ImportError:
-            pass
+        except ImportError as exc:
+            raise RuntimeError(
+                "STT_PROVIDER=siliconflow 但缺少 stt_siliconflow.py，不会回退到 mock。"
+            ) from exc
+        return SiliconFlowSTT()
     if name in {"faster_whisper", "faster-whisper"}:
         return FasterWhisperSTT()
     return MockSTT()

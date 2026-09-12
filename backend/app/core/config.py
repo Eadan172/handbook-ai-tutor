@@ -110,7 +110,9 @@ class Settings(BaseSettings):
 
     rag_provider: str = "llamaindex"  # llamaindex | pgvector
     embedding_dim: int = 1024
-    stt_provider: str = "mock"  # mock | faster_whisper
+    stt_provider: str = "mock"  # mock | faster_whisper | siliconflow
+    stt_siliconflow_model: str = "FunAudioLLM/SenseVoiceSmall"
+    stt_siliconflow_base_url: str = "https://api.siliconflow.cn/v1"
     # Whisper model size for faster-whisper. small 对中文讲课 + 夹杂外语单词的
     # 识别质量明显好于 base，CPU int8 也能跑；需要更快可降到 base。
     stt_whisper_model: str = "small"

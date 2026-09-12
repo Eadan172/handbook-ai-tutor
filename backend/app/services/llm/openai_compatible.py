@@ -123,6 +123,11 @@ class OpenAICompatibleProvider(LLMProvider):
                 headers=self._headers(),
                 json={"model": model, "input": texts},
             )
+            if resp.status_code >= 400:
+                detail = (resp.text or "")[:300]
+                raise RuntimeError(
+                    f"{self.name} embeddings {resp.status_code}: {detail}"
+                )
             resp.raise_for_status()
             data = resp.json()
         items = sorted(data.get("data") or [], key=lambda x: x.get("index", 0))
