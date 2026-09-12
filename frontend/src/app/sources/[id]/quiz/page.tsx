@@ -469,6 +469,14 @@ export default function QuizPage() {
             sourceId={id}
             structure={structure.data}
             attempt={viewing}
+            onRetryFailed={() => {
+              const failed = viewing.results.filter((r) => !r.correct).map((r) => r.question_id);
+              if (!failed.length) return;
+              setRetryIds(failed);
+              setDrafts({});
+              setViewing(null);
+              setBanner({ kind: "ok", text: `已载入 ${failed.length} 道错题，答完后再次提交。` });
+            }}
             onClose={() => setViewing(null)}
             onExport={() => downloadJson(`attempt-${viewing.id.slice(0, 8)}.json`, viewing)}
           />

@@ -6,7 +6,17 @@ import { AlertTriangle, ScanLine } from "lucide-react";
 export function isMockProvenance(note: string | null | undefined): boolean {
   if (!note) return false;
   const n = note.toLowerCase();
-  return n.includes("mock") || n.includes("模拟");
+  // Only warn for mock *extraction* (STT/OCR). A text-layer PDF summarized by
+  // MockLLM still contains the word "mock" and must not look like a fake transcript.
+  return (
+    n.includes("mock stt") ||
+    n.includes("stt mock") ||
+    n.includes("ocr mock") ||
+    n.includes("mock ocr") ||
+    n.includes("mock transcription") ||
+    n.includes("模拟语音") ||
+    n.includes("模拟转写")
+  );
 }
 
 export function ExtractionNote({
