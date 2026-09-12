@@ -12,10 +12,12 @@ from app.models.knowledge import KnowledgePoint, SourceSummary
 from app.models.note import SourceNote
 from app.models.quiz import Quiz, QuizAttempt, QuizQuestion
 from app.models.source import Source
+from app.models.tutor import TutorMessage
 
 logger = logging.getLogger("app.exchange")
 
 BUNDLE_FORMAT = "handbook-ai-tutor/bundle@1"
+TUTOR_FORMAT = "handbook-ai-tutor/tutor@1"
 
 
 def _parse_dt(value) -> datetime:
@@ -168,6 +170,49 @@ async def build_bundle(session: AsyncSession, *, source: Source, user_id: UUID) 
         ],
         "quizzes": quiz_payload,
         "records": records_payload,
+        "tutor": await _tutor_rows(session, source_id=source.id, user_id=user_id),
+    }
+
+
+async def _tutor_rows(session: AsyncSession, *, source_id: UUID, user_id: UUID) -> list[dict]:
+    rows = (
+        (
+            await session.execute(
+                select(TutorMessage)
+                .where(TutorMessage.source_id == source_id, TutorMessage.user_id == user_id)
+                .order_by(TutorMessage.created_at)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return [serialize_tutor_message(row) for row in rows]
+
+
+def serialize_tutor_message(row: TutorMessage) -> dict:
+    try:
+        citations = json.loads(row.citations_json or "[]")
+    except json.JSONDecodeError:
+        citations = []
+    return {
+        "role": row.role,
+        "content": row.content,
+        "citations": citations,
+        "created_at": row.created_at.isoformat() if row.created_at else None,
+    }
+
+
+async def build_tutor_export(session: AsyncSession, *, source: Source, user_id: UUID) -> dict:
+    return {
+        "format": TUTOR_FORMAT,
+        "exported_at": datetime.now(timezone.utc).isoformat(),
+        "source": {
+            "id": str(source.id),
+            "filename": source.filename,
+            "kind": source.kind,
+            "title": source.title,
+        },
+        "tutor": await _tutor_rows(session, source_id=source.id, user_id=user_id),
     }
 
 
@@ -192,6 +237,8 @@ async def apply_bundle(
         "records_created": 0,
         "summary_restored": False,
         "knowledge_restored": 0,
+        "tutor_created": 0,
+        "tutor_skipped": 0,
     }
     replace = mode == "replace"
 
@@ -206,6 +253,11 @@ async def apply_bundle(
         await session.execute(delete(SourceNote).where(SourceNote.source_id == source.id))
         await session.execute(delete(KnowledgePoint).where(KnowledgePoint.source_id == source.id))
         await session.execute(delete(SourceSummary).where(SourceSummary.source_id == source.id))
+        await session.execute(
+            delete(TutorMessage).where(
+                TutorMessage.source_id == source.id, TutorMessage.user_id == user_id
+            )
+        )
         await session.flush()
 
     # ---- summary + knowledge (only when the source has none, unless replacing)
@@ -354,6 +406,40 @@ async def apply_bundle(
             attempt.created_at = submitted
         session.add(attempt)
         counters["records_created"] += 1
+
+    existing_tutor = {
+        (m.role, m.content)
+        for m in (
+            await session.execute(
+                select(TutorMessage).where(
+                    TutorMessage.source_id == source.id, TutorMessage.user_id == user_id
+                )
+            )
+        )
+        .scalars()
+        .all()
+    }
+    for item in bundle.get("tutor") or []:
+        role = str(item.get("role") or "")[:32]
+        content = str(item.get("content") or "")
+        if role not in {"user", "assistant"} or not content.strip():
+            continue
+        if (role, content) in existing_tutor:
+            counters["tutor_skipped"] += 1
+            continue
+        citations = item.get("citations") or []
+        row = TutorMessage(
+            source_id=source.id,
+            user_id=user_id,
+            role=role,
+            content=content,
+            citations_json=json.dumps(citations, ensure_ascii=False, default=str),
+        )
+        if item.get("created_at"):
+            row.created_at = _parse_dt(item.get("created_at"))
+        session.add(row)
+        existing_tutor.add((role, content))
+        counters["tutor_created"] += 1
 
     await session.commit()
     return counters

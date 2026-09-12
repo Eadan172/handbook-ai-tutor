@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from app.services.front_matter import is_front_matter_section
 from app.services.layout import (
     ATOMIC_TYPES,
     BODY,
@@ -353,8 +354,18 @@ def format_document_excerpts(chunks: list, *, max_chars: int = 10000) -> str:
         return True
 
     outline = [c for c in chunks if kind(c) == OUTLINE]
-    headings = [c for c in chunks if kind(c) == HEADING]
-    rest = [c for c in chunks if kind(c) not in (OUTLINE, HEADING)]
+    headings = [
+        c
+        for c in chunks
+        if kind(c) == HEADING
+        and not is_front_matter_section(getattr(c, "section_title", None) or c.content)
+    ]
+    rest = [
+        c
+        for c in chunks
+        if kind(c) not in (OUTLINE, HEADING)
+        and not is_front_matter_section(getattr(c, "section_title", None) or "")
+    ]
 
     for chunk in outline:
         add(chunk)

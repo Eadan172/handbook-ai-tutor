@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import logging
-from collections import OrderedDict
 from datetime import datetime, timezone
 from uuid import UUID
 
@@ -12,16 +11,19 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.chunk import DocumentChunk
 from app.models.quiz import QUESTION_TYPES, Quiz, QuizAttempt, QuizQuestion
+from app.models.source import Source
 from app.prompts import load_prompt
 from app.services.chunking import format_document_excerpts
+from app.services.front_matter import exclude_front_matter, major_study_sections
 from app.services.llm.base import ChatMessage
 from app.services.llm.router import ModelRouter
+from app.services.pipeline import source_readiness_error
 from app.utils.jsonutil import parse_json_object
 
 logger = logging.getLogger("app.quiz")
 
 QUIZ_PROMPT_VERSION = "quiz_generate.v2"
-EXPLAIN_PROMPT_VERSION = "quiz_explain.v1"
+EXPLAIN_PROMPT_VERSION = "quiz_explain.v2"
 
 # Per-section generate + merge only when the document is large enough that a
 # single 11k excerpt would still under-represent later chapters.
@@ -65,14 +67,8 @@ def _normalise_type(raw: str, options: list[str]) -> str:
 
 
 def major_sections(chunks: list) -> list[str]:
-    """Document section titles in reading order, skipping empty / outline-only."""
-    seen: OrderedDict[str, None] = OrderedDict()
-    for chunk in chunks:
-        title = (getattr(chunk, "section_title", None) or "").strip()
-        kind = getattr(chunk, "content_type", "") or ""
-        if title and kind != "outline":
-            seen[title] = None
-    return list(seen)
+    """Document section titles in reading order, skipping outline and front matter."""
+    return major_study_sections(chunks)
 
 
 def scoring_note_for(question_type: str) -> str:
@@ -138,6 +134,12 @@ async def generate_quiz(
     user_id: UUID,
     router: ModelRouter,
 ) -> Quiz:
+    source = (await session.execute(select(Source).where(Source.id == source_id))).scalar_one_or_none()
+    if source is None:
+        raise ValueError("资料不存在")
+    blocked = source_readiness_error(source)
+    if blocked:
+        raise ValueError(blocked)
     chunks = (
         (
             await session.execute(
@@ -150,17 +152,17 @@ async def generate_quiz(
         .all()
     )
     if not chunks:
-        raise ValueError("Source has no chunks yet; wait for ingest to finish.")
+        raise ValueError("资料还没有可检索的原文切片。若解析已失败，请回到原文页查看原因后重新导入。")
     known = {str(c.id) for c in chunks}
-    # Structure-first sampling: a quiz that only ever sees the preface cannot be
-    # "chapter by chapter", which is what the learner asked for.
-    sections = major_sections(chunks)
-    if len(sections) >= _SECTION_GENERATE_MIN and len(chunks) >= _SECTION_GENERATE_CHUNK_MIN:
+    # Skip 前言 / 致谢 / preface so questions start at chapter 1.
+    study_chunks = exclude_front_matter(chunks) or chunks
+    sections = major_sections(study_chunks)
+    if len(sections) >= _SECTION_GENERATE_MIN and len(study_chunks) >= _SECTION_GENERATE_CHUNK_MIN:
         title, questions = await _generate_per_section(
-            chunks, router=router, user_id=user_id, source_id=source_id, sections=sections
+            study_chunks, router=router, user_id=user_id, source_id=source_id, sections=sections
         )
     else:
-        excerpts = format_document_excerpts(chunks, max_chars=11000)
+        excerpts = format_document_excerpts(study_chunks, max_chars=11000)
         result = await _complete_quiz(router, user_id, source_id, excerpts)
         data = parse_json_object(result.content)
         title = str(data.get("title") or "Practice quiz")
@@ -233,23 +235,56 @@ class ExplainSchema(BaseModel):
     results: list[ExplainItem]
 
 
-def _fallback_explanation(q: QuizQuestion, correct: bool, user_answer: str) -> str:
-    """Deterministic explanation used when the explain pass cannot run."""
+def _fmt_locator(chunk: DocumentChunk | None) -> str:
+    if chunk is None:
+        return ""
+    if chunk.start_time is not None:
+        s = max(0, int(chunk.start_time))
+        stamp = f"{s // 60}:{s % 60:02d}"
+        if chunk.end_time is not None:
+            e = max(0, int(chunk.end_time))
+            stamp += f"-{e // 60}:{e % 60:02d}"
+        return f"视频 {stamp}"
+    if chunk.printed_page is not None:
+        extra = (
+            f"（PDF 第 {chunk.page_number} 页）"
+            if chunk.page_number and chunk.page_number != chunk.printed_page
+            else ""
+        )
+        return f"书内第 {chunk.printed_page} 页{extra}"
+    if chunk.page_number is not None:
+        return f"第 {chunk.page_number} 页"
+    return (chunk.locator or "").strip()
+
+
+def _fallback_explanation(
+    q: QuizQuestion,
+    correct: bool,
+    user_answer: str,
+    *,
+    locator: str = "",
+) -> str:
+    """Deterministic Chinese explanation used when the explain pass cannot run."""
+    where = f"依据{locator}。" if locator else "依据原文。"
     if q.question_type == "choice":
         try:
             options = json.loads(q.options_json or "[]")
         except json.JSONDecodeError:
             options = []
+        letter = (
+            chr(65 + q.correct_index) if 0 <= q.correct_index < max(1, len(options)) else "?"
+        )
         right = options[q.correct_index] if 0 <= q.correct_index < len(options) else "-"
+        if not (user_answer or "").strip():
+            return f"未作答。正确答案是 {letter}. {right}。{where}该选项符合原文表述。"
         if correct:
-            return f"Correct. The source supports: {right}"
-        return f"Not quite. The correct option is: {right}"
+            return f"回答正确。{letter}. {right} 是对的，{where}"
+        return f"回答不正确。正确答案是 {letter}. {right}。{where}"
     if not user_answer.strip():
-        return "No answer was submitted. Compare with the reference answer shown above and try again."
-    return (
-        "Automatic explanation unavailable (the marking model could not be reached). "
-        "Compare your answer with the reference answer above."
-    )
+        ref = (q.reference_answer or "").strip()
+        hint = f"参考答案：{ref}" if ref else "请对照参考答案再答一次。"
+        return f"未作答。{where}{hint}"
+    return f"自动解析暂不可用。{where}请对照上面的参考答案。"
 
 
 def _build_explain_prompt(rows: list[dict]) -> str:
@@ -261,15 +296,24 @@ def _build_explain_prompt(rows: list[dict]) -> str:
             f"type: {row['question_type']}",
             f"question: {row['question']}",
         ]
+        if row.get("locator"):
+            lines.append(f"locator: {row['locator']}")
         if row["question_type"] == "choice":
             options = row["options"]
-            lines.append("options: " + " | ".join(f"{i}. {o}" for i, o in enumerate(options)))
-            lines.append(f"correct_index: {row['correct_index']}")
+            letter = (
+                chr(65 + row["correct_index"])
+                if isinstance(row["correct_index"], int) and row["correct_index"] >= 0
+                else "?"
+            )
+            lines.append("options: " + " | ".join(f"{chr(65 + i)}. {o}" for i, o in enumerate(options)))
+            lines.append(f"correct_index: {row['correct_index']} (选项 {letter})")
+            if 0 <= int(row["correct_index"] or 0) < len(options):
+                lines.append(f"correct_option: {letter}. {options[row['correct_index']]}")
         if row["reference_answer"]:
             lines.append(f"reference_answer: {row['reference_answer']}")
         if row["rubric"]:
             lines.append(f"rubric: {row['rubric']}")
-        lines.append(f"learner_answer: {row['user_answer'] or '(empty)'}")
+        lines.append(f"learner_answer: {row['user_answer'] or '（未作答）'}")
         parts.append("\n".join(lines))
     return "\n\n---\n\n".join(parts)
 
@@ -322,6 +366,26 @@ async def grade_attempt(
         if not questions:
             raise ValueError("No matching questions to grade")
 
+    cited_ids: list[UUID] = []
+    for q in questions:
+        try:
+            for raw_id in json.loads(q.chunk_ids_json or "[]"):
+                cited_ids.append(UUID(str(raw_id)))
+        except (ValueError, TypeError, json.JSONDecodeError):
+            continue
+    chunks_by_id: dict[str, DocumentChunk] = {}
+    if cited_ids:
+        found = (
+            (
+                await session.execute(
+                    select(DocumentChunk).where(DocumentChunk.id.in_(cited_ids))
+                )
+            )
+            .scalars()
+            .all()
+        )
+        chunks_by_id = {str(c.id): c for c in found}
+
     rows: list[dict] = []
     local: dict[int, tuple[bool, float]] = {}
     for q in questions:
@@ -339,6 +403,14 @@ async def grade_attempt(
         else:
             local[q.ordinal] = (False, 0.0)  # decided by the marking pass
             user_answer = text_answer
+        locator = ""
+        try:
+            for raw_id in json.loads(q.chunk_ids_json or "[]"):
+                locator = _fmt_locator(chunks_by_id.get(str(raw_id)))
+                if locator:
+                    break
+        except json.JSONDecodeError:
+            locator = ""
         rows.append(
             {
                 "ordinal": q.ordinal,
@@ -352,6 +424,7 @@ async def grade_attempt(
                 "user_answer": user_answer,
                 "text_answer": text_answer,
                 "selected_index": selected,
+                "locator": locator,
             }
         )
 
@@ -362,7 +435,7 @@ async def grade_attempt(
         explain_result = await router.complete(
             task="quiz_explain",
             messages=[
-                ChatMessage(role="system", content=load_prompt("quiz_explain.v1.txt")),
+                ChatMessage(role="system", content=load_prompt("quiz_explain.v2.txt")),
                 ChatMessage(role="user", content=_build_explain_prompt(rows)),
             ],
             user_id=user_id,
@@ -394,7 +467,9 @@ async def grade_attempt(
         total += score
         explanation = str(explain.get("explanation") or "").strip()
         if not explanation:
-            explanation = _fallback_explanation(question, correct, row["text_answer"])
+            explanation = _fallback_explanation(
+                question, correct, row["text_answer"], locator=row.get("locator") or ""
+            )
         details.append(
             {
                 "question_id": str(question.id),

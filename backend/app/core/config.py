@@ -109,7 +109,7 @@ class Settings(BaseSettings):
     local_storage_path: str = str(REPO_ROOT / "data" / "storage")
 
     rag_provider: str = "llamaindex"  # llamaindex | pgvector
-    embedding_dim: int = 1536
+    embedding_dim: int = 1024
     stt_provider: str = "mock"  # mock | faster_whisper
     # Whisper model size for faster-whisper. small 对中文讲课 + 夹杂外语单词的
     # 识别质量明显好于 base，CPU int8 也能跑；需要更快可降到 base。

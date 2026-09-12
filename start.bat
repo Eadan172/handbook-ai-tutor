@@ -52,8 +52,13 @@ if not defined NODE_DIR goto :err_node
 REM Give child windows this project venv python + detected node first
 set "PATH=%ROOT%\.venv\Scripts;%NODE_DIR%;%PATH%"
 
-REM Local ffmpeg (downloaded on demand into tools\ffmpeg). Video upload needs it
-REM for audio extraction; without it mp4 ingest fails at the first step.
+REM Local ffmpeg lives in tools\ffmpeg\bin only (never the system PATH).
+REM If the binaries are missing, download a copy there so video ingest does
+REM not die with WinError 2 / "系统找不到指定的文件".
+if not exist "%ROOT%\tools\ffmpeg\bin\ffmpeg.exe" (
+  echo   [ffmpeg] local copy missing, downloading into tools\ffmpeg\bin ...
+  powershell -NoProfile -ExecutionPolicy Bypass -File "%ROOT%\scripts\bootstrap_ffmpeg.ps1"
+)
 if exist "%ROOT%\tools\ffmpeg\bin\ffmpeg.exe" set "PATH=%ROOT%\tools\ffmpeg\bin;%PATH%"
 
 REM ---------- 4. Runtime environment (all data is persisted on disk) ----------

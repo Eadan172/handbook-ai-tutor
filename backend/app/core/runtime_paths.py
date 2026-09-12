@@ -291,10 +291,21 @@ def describe_embed() -> dict[str, Any]:
         note = f"{type(exc).__name__}: {exc}"
 
     if not active:
-        note = (
-            "未填写 Embedding API，向量化走自动回退；没有任何可用向量供应商时"
-            "使用本地 mock 向量（可离线运行，但语义检索精度有限）。"
-        )
+        routed_error = bool(note and ("LLMConfigError" in note or "embeddings" in note.lower()))
+        if routed_error:
+            pass
+        elif effective_provider == "mock":
+            note = (
+                "未填写 Embedding API。当前是离线 mock 向量（CI / LLM_DEFAULT_PROVIDER=mock）。"
+                "接入真实对话模型后，必须再配置 siliconflow（BAAI/bge-m3）或 dashscope"
+                "（text-embedding-v3），否则解析会失败而不是 silently 用假课文。"
+            )
+        else:
+            note = (
+                "未填写 Embedding API，向量化走已配置的供应商"
+                f"（{effective_provider} / {effective_model or '—'}）。"
+                " DeepSeek 不会被用于 /embeddings。"
+            )
     elif effective_provider != "embed_override":
         note = note or "Embedding API 已保存，但当前没有被选用，请检查下方的路由表。"
 

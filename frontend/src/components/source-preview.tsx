@@ -66,7 +66,7 @@ export const SourcePreview = forwardRef<
   useImperativeHandle(ref, () => ({ seek, jumpToPage, jumpToCitation }), [seek, jumpToPage, jumpToCitation]);
 
   return (
-    <section className="flex min-h-0 flex-col overflow-hidden rounded-xl border bg-card">
+    <section className="flex min-h-[28rem] min-w-0 flex-col overflow-hidden rounded-xl border bg-card lg:min-h-0">
       <div className="flex shrink-0 items-center justify-between gap-2 border-b px-3 py-2">
         <span className="flex items-center gap-2 text-sm font-medium">
           原文
@@ -94,11 +94,7 @@ export const SourcePreview = forwardRef<
           </Button>
         </div>
       </div>
-      <div
-        className={`min-h-0 flex-1 bg-muted/40 ${
-          isVideo ? "flex items-center justify-center overflow-hidden" : "overflow-auto"
-        }`}
-      >
+      <div className="relative min-h-0 flex-1 bg-muted/40">
         {isVideo ? (
           <video
             ref={videoRef}
@@ -106,7 +102,7 @@ export const SourcePreview = forwardRef<
             controls
             playsInline
             preload="metadata"
-            className="h-full w-full bg-black"
+            className="absolute inset-0 h-full w-full bg-black object-contain"
             onError={(e) =>
               onError?.(`视频无法播放：${e.currentTarget.error?.message || "浏览器拒绝了该媒体文件"}`)
             }
@@ -114,10 +110,17 @@ export const SourcePreview = forwardRef<
             你的浏览器不支持内嵌视频播放。
           </video>
         ) : kind === "image" ? (
-          // eslint-disable-next-line @next/next/no-img-element
-          <img src={fileUrl} alt={filename || "source"} className="mx-auto block max-w-full" />
+          <div className="absolute inset-0 overflow-auto">
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img src={fileUrl} alt={filename || "source"} className="mx-auto block max-w-full" />
+          </div>
         ) : fileUrl ? (
-          <iframe key={pdfUrl} src={pdfUrl} title="source-pdf" className="h-full min-h-[70vh] w-full" />
+          <iframe
+            key={pdfUrl}
+            src={pdfUrl}
+            title="source-pdf"
+            className="absolute inset-0 h-full w-full border-0"
+          />
         ) : null}
       </div>
     </section>

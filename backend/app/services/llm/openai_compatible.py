@@ -107,7 +107,16 @@ class OpenAICompatibleProvider(LLMProvider):
         )
 
     async def embed(self, *, task: str, texts: list[str]) -> EmbedResult:
-        model = self.models.get("embed") or self._model_for(task)
+        from app.services.llm.models import looks_like_chat_model
+
+        model = self.models.get("embed") or ""
+        if not model or looks_like_chat_model(model):
+            raise RuntimeError(
+                f'Provider "{self.name}" refused to call {self.base_url}/embeddings '
+                f'with chat model "{model or self._model_for(task)}". '
+                "Set LLM_PROVIDER_EMBED to siliconflow (BAAI/bge-m3) or dashscope "
+                "(text-embedding-v3), or fill in the Embedding API in 设置."
+            )
         async with httpx.AsyncClient(timeout=self.timeout, trust_env=True) as client:
             resp = await client.post(
                 f"{self.base_url}/embeddings",

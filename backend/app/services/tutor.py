@@ -40,9 +40,9 @@ def ground_citation_ids(claimed: list[str], allowed: set[str]) -> list[str]:
 
 
 _CITE_RETRY = (
-    "Your previous citation_chunk_ids were empty or included ids that are not "
-    "in the retrieved excerpts. Cite ONLY chunk_id values that appear in the "
-    "excerpts above. If you did not use a chunk, omit it. Return JSON again."
+    "上一轮 citation_chunk_ids 含有摘录里不存在的 id。只能引用上面出现的 "
+    "chunk_id；若这段回答主要靠通用知识、没有用到摘录，请返回空数组。"
+    "不要编造页码或 id。再次返回 JSON。"
 )
 
 
@@ -175,31 +175,31 @@ async def tutor_reply(
     scope_lines: list[str] = []
     if intent.filter.pages:
         scope_lines.append(
-            "Learner asked about page(s): "
+            "学习者问到页码："
             + ", ".join(str(p) for p in intent.filter.pages)
-            + " (printed page numbers; the PDF index differs)"
+            + "（书内页码；与 PDF 页码可能不同）"
         )
     if intent.filter.section_terms:
-        scope_lines.append(
-            "Learner asked about section(s): " + ", ".join(intent.filter.section_terms)
-        )
+        scope_lines.append("学习者问到章节：" + ", ".join(intent.filter.section_terms))
     if intent.wants_outline:
         scope_lines.append(
-            "Learner asked for the document's overall structure. An excerpt whose "
-            "type is 'outline' is the book's table of contents -- use it."
+            "学习者在问全书结构。type=outline 的摘录是目录，请按它来答。"
         )
 
     parts: list[str] = []
     if scope_lines:
-        parts.append("Interpreted scope:\n" + "\n".join(f"- {line}" for line in scope_lines))
-    parts.append("Retrieved excerpts (cite only these):\n" + format_excerpts(citations))
-    parts.append(f"Learner: {message}")
+        parts.append("已理解的范围：\n" + "\n".join(f"- {line}" for line in scope_lines))
+    parts.append(
+        "检索到的原文摘录（引用时只能填这些 chunk_id；通用知识不要编造出处）：\n"
+        + format_excerpts(citations)
+    )
+    parts.append(f"学习者：{message}")
     user_prompt = "\n\n".join(parts)
 
     result = await router.complete(
         task="tutor",
         messages=[
-            ChatMessage(role="system", content=load_prompt("tutor.v2.txt")),
+            ChatMessage(role="system", content=load_prompt("tutor.v3.txt")),
             ChatMessage(role="user", content=user_prompt),
         ],
         user_id=user_id,
@@ -209,12 +209,14 @@ async def tutor_reply(
     allowed = {str(c.chunk_id) for c in citations}
     used_ids = ground_citation_ids(parsed.citation_chunk_ids, allowed)
     claimed = [str(cid) for cid in parsed.citation_chunk_ids]
-    needs_retry = (not claimed) or any(cid not in allowed for cid in claimed)
+    # Empty citations are allowed: the model may add its own knowledge.
+    # Only retry when it invented an id that was never retrieved.
+    needs_retry = any(cid not in allowed for cid in claimed)
     if needs_retry:
         retry = await router.complete(
             task="tutor",
             messages=[
-                ChatMessage(role="system", content=load_prompt("tutor.v2.txt")),
+                ChatMessage(role="system", content=load_prompt("tutor.v3.txt")),
                 ChatMessage(role="user", content=user_prompt),
                 ChatMessage(role="assistant", content=result.content),
                 ChatMessage(role="user", content=_CITE_RETRY),

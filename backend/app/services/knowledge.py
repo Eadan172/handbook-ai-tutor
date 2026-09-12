@@ -11,6 +11,7 @@ from app.models.chunk import DocumentChunk
 from app.models.knowledge import KnowledgePoint, SourceSummary
 from app.prompts import load_prompt
 from app.services.chunking import format_document_excerpts
+from app.services.front_matter import exclude_front_matter
 from app.services.llm.base import ChatMessage
 from app.services.llm.router import ModelRouter
 from app.utils.jsonutil import parse_model
@@ -60,9 +61,10 @@ async def generate_summary_and_knowledge(
         .all()
     )
     known = {str(c.id) for c in chunks}
-    # Structure-first sampling, so a 600-page book is summarised from its whole
-    # shape instead of its cover page.
-    excerpts = format_document_excerpts(chunks, max_chars=11000)
+    # Skip 前言 / 致谢 / preface so a 600-page book is summarised from chapter 1
+    # onward, not from the cover and acknowledgements.
+    sampled = exclude_front_matter(chunks) or chunks
+    excerpts = format_document_excerpts(sampled, max_chars=11000)
 
     summary_result = await router.complete(
         task="summarize",

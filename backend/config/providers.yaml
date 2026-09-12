@@ -117,4 +117,5 @@ providers:
     api_key_env: OPENAI_COMPAT_API_KEY
     models:
       default: deepseek-chat
-      embed: deepseek-chat
+      # No embed model: DeepSeek (and this catch-all) must never post
+      # deepseek-chat to /embeddings. Route embed to siliconflow / dashscope.

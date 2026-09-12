@@ -251,6 +251,8 @@ export type ImportResult = {
   records_created: number;
   summary_restored: boolean;
   knowledge_restored: number;
+  tutor_created?: number;
+  tutor_skipped?: number;
   mode: string;
 };
 
@@ -263,6 +265,7 @@ export type SourceBundle = {
   notes: Record<string, unknown>[];
   quizzes: Record<string, unknown>[];
   records: Record<string, unknown>[];
+  tutor?: Record<string, unknown>[];
 };
 
 export type RouteRow = {

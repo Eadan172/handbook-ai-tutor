@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from app.core.config import get_settings
+from app.core.ffmpeg import FFmpegMissing, ffmpeg_cmd, ffprobe_cmd
 
 
 @dataclass
@@ -27,7 +28,7 @@ class STTProvider(ABC):
 
 async def probe_duration(path: Path) -> float:
     proc = await asyncio.create_subprocess_exec(
-        "ffprobe",
+        ffprobe_cmd(),
         "-v",
         "error",
         "-show_entries",
@@ -51,22 +52,35 @@ async def extract_audio(video_bytes: bytes, suffix: str = ".mp4") -> tuple[Path,
     video_path = work / f"source{suffix}"
     wav_path = work / "audio.wav"
     video_path.write_bytes(video_bytes)
-    proc = await asyncio.create_subprocess_exec(
-        "ffmpeg",
-        "-y",
-        "-i",
-        str(video_path),
-        "-vn",
-        "-acodec",
-        "pcm_s16le",
-        "-ar",
-        "16000",
-        "-ac",
-        "1",
-        str(wav_path),
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
+    try:
+        ffmpeg = ffmpeg_cmd()
+    except FFmpegMissing:
+        shutil.rmtree(work, ignore_errors=True)
+        raise
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            ffmpeg,
+            "-y",
+            "-i",
+            str(video_path),
+            "-vn",
+            "-acodec",
+            "pcm_s16le",
+            "-ar",
+            "16000",
+            "-ac",
+            "1",
+            str(wav_path),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+    except FileNotFoundError as exc:
+        shutil.rmtree(work, ignore_errors=True)
+        raise FFmpegMissing(
+            "未找到 ffmpeg，无法从视频提取音频。"
+            "请把 ffmpeg.exe 与 ffprobe.exe 放到项目的 tools\\ffmpeg\\bin\\ "
+            "（双击 start.vbs 会尝试自动下载），然后重新导入。"
+        ) from exc
     _, stderr = await proc.communicate()
     if proc.returncode != 0 or not wav_path.exists():
         shutil.rmtree(work, ignore_errors=True)
@@ -198,7 +212,7 @@ def _duration_sync(path: Path) -> float:
 
     proc = subprocess.run(
         [
-            "ffprobe",
+            ffprobe_cmd(),
             "-v", "error",
             "-show_entries", "format=duration",
             "-of", "default=noprint_wrappers=1:nokey=1",
@@ -221,11 +235,16 @@ def _split_wav_sync(path: Path, chunk_seconds: float) -> list[tuple[Path, float]
     pattern = path.with_name("chunk_%05d.wav")
     proc = subprocess.run(
         [
-            "ffmpeg", "-y",
-            "-i", str(path),
-            "-f", "segment",
-            "-segment_time", str(int(chunk_seconds)),
-            "-c", "copy",
+            ffmpeg_cmd(),
+            "-y",
+            "-i",
+            str(path),
+            "-f",
+            "segment",
+            "-segment_time",
+            str(int(chunk_seconds)),
+            "-c",
+            "copy",
             str(pattern),
         ],
         capture_output=True,

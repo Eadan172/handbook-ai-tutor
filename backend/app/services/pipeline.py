@@ -28,6 +28,8 @@ from app.services.pdf_parser import (
     looks_textless,
     parse_pdf,
 )
+from app.core.ffmpeg import FFmpegMissing
+from app.services.llm.router import LLMConfigError
 from app.services.progress import ProgressService
 from app.services.storage import get_storage
 from app.services.stt import extract_audio, get_stt, transcribe_audio_resilient
@@ -117,12 +119,16 @@ class IngestPipeline:
             )
         except Exception as exc:
             detail = str(exc)[:2000]
-            # Name the provider that failed so a bad key is obvious from the UI.
-            try:
-                provider = self.router.provider_for("summarize")
-                detail = f"[{provider.name} / {provider.model_for('summarize')}] {detail}"
-            except Exception:
-                pass
+            # Name the provider that actually failed. Prefixing every error with
+            # the summarize (chat) vendor made a SiliconFlow /embeddings 400
+            # look like "[deepseek / deepseek-chat] ...".
+            task = _failing_task(exc)
+            if task:
+                try:
+                    provider = self.router.provider_for(task)
+                    detail = f"[{provider.name} / {provider.model_for(task)}] {detail}"
+                except Exception:
+                    pass
             source.status = "failed"
             source.error_message = detail
             await self.session.commit()
@@ -550,4 +556,39 @@ class IngestPipeline:
         await self.session.commit()
 
 
-__all__ = ["IngestError", "IngestPipeline", "MIN_USABLE_CHARS"]
+def _failing_task(exc: BaseException) -> str | None:
+    """Which routed task is most likely responsible for this ingest exception."""
+    if isinstance(exc, FFmpegMissing):
+        return None
+    text = str(exc)
+    lowered = text.lower()
+    if isinstance(exc, LLMConfigError) and "embed" in lowered:
+        return "embed"
+    if "/embeddings" in lowered or "embedding" in lowered:
+        return "embed"
+    if "ffmpeg" in lowered or "ffprobe" in lowered or "winerror 2" in lowered:
+        return None
+    return "summarize"
+
+
+def source_readiness_error(source) -> str | None:
+    """Chinese reason the learner cannot quiz/tutor this source yet, or None."""
+    status = getattr(source, "status", None)
+    if status == "ready":
+        return None
+    if status == "failed":
+        err = (getattr(source, "error_message", None) or "").strip()
+        extra = f"：{err}" if err else ""
+        return (
+            f"资料解析失败{extra}。"
+            "请回到原文页检查配置（向量模型 / ffmpeg / 语音识别）后重新导入。"
+        )
+    return "资料仍在解析中，请稍候。解析完成后即可提问或生成练习题。"
+
+
+__all__ = [
+    "IngestError",
+    "IngestPipeline",
+    "MIN_USABLE_CHARS",
+    "source_readiness_error",
+]

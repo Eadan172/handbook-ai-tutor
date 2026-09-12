@@ -182,9 +182,10 @@ async def test_quiz_covers_each_major_section(client: AsyncClient) -> None:
         )
         session.add(source)
         await session.flush()
-        sections = ["第1章 前言", "第2章 光反应", "第3章 暗反应", "第4章 应用"]
+        front = ["前言", "致谢"]
+        chapters = ["第1章 光反应", "第2章 暗反应", "第3章 应用", "第4章 总结"]
         ordinal = 0
-        for title in sections:
+        for title in front + chapters:
             for i in range(4):
                 text = f"{title} body paragraph {i} about the topic in this chapter."
                 session.add(
@@ -208,4 +209,6 @@ async def test_quiz_covers_each_major_section(client: AsyncClient) -> None:
     assert gen.status_code == 200, gen.text
     quiz = gen.json()
     covered = {q["section_title"] for q in quiz["questions"]}
-    assert set(sections) <= covered, covered
+    assert "前言" not in covered
+    assert "致谢" not in covered
+    assert set(chapters) <= covered, covered
