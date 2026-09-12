@@ -13,7 +13,7 @@ Return JSON only:
       "reference_answer": "model answer for open-ended types",
       "rubric": "what a good answer must contain",
       "instructions": "one short line telling the learner what to do",
-      "explanation": "why the answer is correct, citing the source",
+      "explanation": "中文：为什么正确答案对，并写明页码或时间戳",
       "chunk_ids": ["id-if-present"]
     }
   ]
@@ -35,6 +35,10 @@ Choosing question_type (this is the important part):
                     script with pronunciation notes where useful.
 
 Rules:
+- Write every question, option, reference_answer, rubric, instructions and
+  explanation in Chinese (keep technical terms in the source language).
+- Never write items from 致谢 / 前言 / 序言 / preface / acknowledgements /
+  front matter. Start at 第一章 / Chapter 1.
 - Excerpts are headed by `[chunk_id=... locator=... type=...]` and possibly
   `[section=<chapter path>]`. Content types are
   body | heading | caption | formula | table | figure | reference | outline.

@@ -12,6 +12,7 @@ from app.models.knowledge import KnowledgePoint, SourceSummary
 from app.models.note import SourceNote
 from app.prompts import load_prompt
 from app.services.chunking import format_excerpts
+from app.services.front_matter import exclude_front_matter
 from app.services.llm.base import ChatMessage
 from app.services.llm.router import ModelRouter
 from app.utils.jsonutil import parse_json_object
@@ -71,7 +72,8 @@ async def generate_notes(
             + "\n".join(f"- {p.title}: {p.summary}" for p in points)
         )
     if chunks:
-        body_parts.append("EXCERPTS:\n" + format_excerpts(chunks, max_chars=4000))
+        sampled = exclude_front_matter(chunks) or chunks
+        body_parts.append("EXCERPTS:\n" + format_excerpts(sampled, max_chars=4000))
 
     result = await router.complete(
         task="notes_generate",

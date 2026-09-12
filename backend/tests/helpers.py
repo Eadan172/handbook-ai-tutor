@@ -21,8 +21,10 @@ def tiny_mp4_bytes() -> bytes:
 
     with tempfile.TemporaryDirectory() as tmp:
         out = Path(tmp) / "clip.mp4"
+        from app.core.ffmpeg import ffmpeg_cmd
+
         cmd = [
-            "ffmpeg",
+            ffmpeg_cmd(),
             "-y",
             "-f",
             "lavfi",

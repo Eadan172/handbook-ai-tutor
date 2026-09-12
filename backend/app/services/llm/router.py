@@ -15,6 +15,7 @@ from app.services.llm.anthropic import AnthropicProvider
 from app.services.llm.base import ChatMessage, EmbedResult, LLMProvider, LLMResult
 from app.services.llm.mock import MockProvider
 from app.services.llm.ollama import OllamaProvider
+from app.services.llm.models import looks_like_chat_model
 from app.services.llm.openai_compatible import OpenAICompatibleProvider
 
 logger = logging.getLogger("app.llm")
@@ -62,6 +63,17 @@ EMBED_OVERRIDE_ENV = {
 
 # Order used by auto-detection when no provider is pinned explicitly.
 AUTO_ORDER = ("dashscope", "deepseek", "siliconflow", "openai", "anthropic")
+
+EMBED_MISSING_MESSAGE = (
+    "当前没有可用的向量模型。DeepSeek 只有对话接口，不能调用 /embeddings，"
+    "也绝不能把 deepseek-chat 发到 SiliconFlow / DashScope 的 embeddings 地址。"
+    "请设置 LLM_PROVIDER_EMBED=siliconflow（需 SILICONFLOW_API_KEY，模型 BAAI/bge-m3）"
+    "或 LLM_PROVIDER_EMBED=dashscope（需 DASHSCOPE_API_KEY，模型 text-embedding-v3），"
+    "或在「设置」中填写 Embedding API。"
+    " Embedding is unavailable: DeepSeek has no /embeddings endpoint. "
+    "Set LLM_PROVIDER_EMBED to a vendor that declares an embed model "
+    "(siliconflow / dashscope / openai), or configure the Embedding API."
+)
 
 # Providers that can read images, best-first. DeepSeek has no vision model, so it
 # is deliberately absent: an OCR call must never land on it by accident.
@@ -185,7 +197,23 @@ class ModelRouter:
             return True
         spec = self._spec_for(name)
         models = spec.get("models") or {}
-        return bool(models.get("embed"))
+        embed = models.get("embed")
+        return bool(embed) and not looks_like_chat_model(str(embed))
+
+    def _allow_mock_embed(self) -> bool:
+        """Mock vectors are for CI / explicit offline mode only.
+
+        A machine that has a real chat key (DeepSeek, …) must not silently
+        ingest a fake photosynthesis lesson just because embeddings were
+        misconfigured.
+        """
+        pinned = (self.settings.llm_default_provider or "").strip().lower()
+        if pinned == "mock":
+            return True
+        embed_pinned = (self.settings.llm_provider_embed or "").strip().lower()
+        if embed_pinned == "mock":
+            return True
+        return self.default_name == "mock" and not self._first_provider_with_key()
 
     def _first_provider_with_embed(self) -> str | None:
         specs = self.config.get("providers") or {}
@@ -262,9 +290,15 @@ class ModelRouter:
             elif ptype == "openai_compatible":
                 key_env = spec.get("api_key_env") or ""
                 api_key = os.environ.get(key_env, "") if key_env else ""
-                base_url = os.environ.get("OPENAI_COMPAT_BASE_URL") or spec.get("base_url") or ""
-                if name == "openai_compat" and os.environ.get("OPENAI_COMPAT_MODEL"):
-                    models = {**models, "default": os.environ["OPENAI_COMPAT_MODEL"]}
+                # OPENAI_COMPAT_BASE_URL is only the catch-all "openai_compat"
+                # vendor. Applying it to DeepSeek / SiliconFlow / DashScope used
+                # to send deepseek-chat at https://api.siliconflow.cn/v1/embeddings.
+                if name == "openai_compat":
+                    base_url = os.environ.get("OPENAI_COMPAT_BASE_URL") or spec.get("base_url") or ""
+                    if os.environ.get("OPENAI_COMPAT_MODEL"):
+                        models = {**models, "default": os.environ["OPENAI_COMPAT_MODEL"]}
+                else:
+                    base_url = spec.get("base_url") or ""
                 built[name] = OpenAICompatibleProvider(
                     name=name,
                     base_url=base_url,
@@ -318,9 +352,7 @@ class ModelRouter:
 
     def provider_for(self, task: str) -> LLMProvider:
         name = self.provider_name_for(task)
-        if modality_for(task) == "embed" and (
-            EMBED_OVERRIDE_NAME in self.providers or not self._has_embed_model(name)
-        ):
+        if modality_for(task) == "embed":
             name = self._resolve_embed_provider(name)
         provider = self.providers.get(name)
         if provider is None:
@@ -333,35 +365,82 @@ class ModelRouter:
         return provider
 
     def _resolve_embed_provider(self, requested: str) -> str:
-        """Embeddings degrade gracefully, with a visible note.
+        """Pick a vendor that actually has an embedding model.
 
-        Most chat vendors (DeepSeek) expose no /embeddings endpoint. Failing the
-        whole ingest over that would be worse than falling back, so we walk:
-        the Embedding API entered in 设置 -> explicit LLM_PROVIDER_EMBED -> any
-        keyed provider with an embed model -> local deterministic vectors. The
-        chosen name lands in the task message.
+        DeepSeek (and any other chat-only default) must never be used for
+        task=embed: its default model is deepseek-chat, which vendors reject
+        on /embeddings. Walk, in order:
+
+          1. Embedding API entered in 设置 (must not look like a chat model)
+          2. explicit LLM_PROVIDER_EMBED
+          3. first keyed vendor that declares a real embed model
+          4. local mock — only when the whole app is already in mock/offline mode
+
+        Anything else fails loudly so ingest cannot produce a fake lesson.
         """
         if EMBED_OVERRIDE_NAME in self.providers:
-            # An explicit, hand-entered endpoint outranks auto-detection: the
-            # person configured it precisely because they wanted it used.
+            spec = self._synthetic_specs.get(EMBED_OVERRIDE_NAME) or {}
+            model = str((spec.get("models") or {}).get("embed") or "")
+            if looks_like_chat_model(model):
+                raise LLMConfigError(
+                    f'设置里的 Embedding 模型 "{model}" 是对话模型，不能发到 /embeddings。'
+                    "请改成向量模型，例如 BAAI/bge-m3 或 text-embedding-v3。"
+                    f' The Embedding API model "{model}" looks like a chat checkpoint; '
+                    "set a real embedding model."
+                )
             self.embed_note = "embeddings via the Embedding API configured in 设置"
             return EMBED_OVERRIDE_NAME
+
         explicit = (self.settings.llm_provider_embed or "").strip()
-        if explicit and self.providers.get(explicit) and self._has_embed_model(explicit):
+        if explicit:
+            if explicit == "mock":
+                if not self._allow_mock_embed() and self._first_provider_with_key():
+                    # Explicit mock while a real chat key exists is allowed — the
+                    # operator asked for it — but we still record the note.
+                    self.embed_note = "LLM_PROVIDER_EMBED=mock"
+                else:
+                    self.embed_note = "LLM_PROVIDER_EMBED=mock"
+                return "mock"
+            if not self.providers.get(explicit):
+                raise LLMConfigError(
+                    f'LLM_PROVIDER_EMBED="{explicit}" is not defined in providers.yaml. '
+                    + EMBED_MISSING_MESSAGE
+                )
+            if not self._has_embed_model(explicit):
+                raise LLMConfigError(
+                    f'LLM_PROVIDER_EMBED="{explicit}" 没有可用的 embed 模型。'
+                    + EMBED_MISSING_MESSAGE
+                )
             self.embed_note = None
             return explicit
+
+        if requested == "mock" and self._allow_mock_embed():
+            self.embed_note = None
+            return "mock"
+
+        if requested != "mock" and self._has_embed_model(requested):
+            self.embed_note = None
+            return requested
+
         candidate = self._first_provider_with_embed()
         if candidate:
-            logger.warning(
-                "provider %r has no embed model; using %r for embeddings", requested, candidate
-            )
-            self.embed_note = f"{requested} has no embed model; embeddings via {candidate}"
+            if requested != candidate:
+                logger.warning(
+                    "provider %r has no embed model; using %r for embeddings",
+                    requested,
+                    candidate,
+                )
+                self.embed_note = f"{requested} has no embed model; embeddings via {candidate}"
+            else:
+                self.embed_note = None
             return candidate
-        logger.warning(
-            "no provider with an embed model is configured; falling back to local mock embeddings"
-        )
-        self.embed_note = "no embed-capable provider configured; using local mock embeddings"
-        return "mock"
+
+        if self._allow_mock_embed():
+            logger.warning("no embed-capable provider configured; using local mock embeddings")
+            self.embed_note = "no embed-capable provider configured; using local mock embeddings"
+            return "mock"
+
+        raise LLMConfigError(EMBED_MISSING_MESSAGE)
 
     def _spec_for(self, name: str) -> dict:
         if name == "mock":
@@ -384,7 +463,15 @@ class ModelRouter:
                 f"{MODALITY_ENV.get(modality_for(task), 'LLM_DEFAULT_PROVIDER')}=mock for offline mode."
             )
         models = spec.get("models") or {}
-        if not models.get("default") and not models.get(task):
+        if modality_for(task) == "embed":
+            embed_model = models.get("embed")
+            if name != "mock" and (not embed_model or looks_like_chat_model(str(embed_model))):
+                raise LLMConfigError(
+                    f'Provider "{name}" cannot serve embeddings'
+                    + (f' (model "{embed_model}" is a chat checkpoint). ' if embed_model else ". ")
+                    + EMBED_MISSING_MESSAGE
+                )
+        elif not models.get("default") and not models.get(task):
             raise LLMConfigError(
                 f'Provider "{name}" has no model configured for task="{task}".'
             )
@@ -398,9 +485,7 @@ class ModelRouter:
             modality = modality_for(task)
             try:
                 name = self.provider_name_for(task)
-                if modality == "embed" and (
-                    EMBED_OVERRIDE_NAME in self.providers or not self._has_embed_model(name)
-                ):
+                if modality == "embed":
                     self.embed_note = None
                     name = self._resolve_embed_provider(name)
                 provider = self.providers.get(name)

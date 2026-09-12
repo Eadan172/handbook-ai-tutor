@@ -185,8 +185,8 @@ class MockProvider(LLMProvider):
                         "verdict": "correct",
                         "score": 1.0,
                         "explanation": (
-                            f"Mock explanation for question {ordinal + 1}: the answer matches the "
-                            "reference grounded in the uploaded material."
+                            f"模拟解析（第 {ordinal + 1} 题）：正确答案符合原文。"
+                            "未作答时仍应对照正确选项与出处页码或时间戳。"
                         ),
                     }
                 )
@@ -222,9 +222,9 @@ class MockProvider(LLMProvider):
             return json.dumps(
                 {
                     "reply": (
-                        "Let's reason from the source together. Based on the retrieved excerpts, "
-                        "the material focuses on the uploaded content rather than outside trivia. "
-                        "What part still feels unclear — the definition, or how you would apply it?"
+                        "我们结合原文来看。检索到的片段说明这份资料在讲上传的内容，"
+                        "我也可以用通用知识补充背景，但不会编造页码。"
+                        "你更卡在定义，还是不知道怎么应用？"
                     ),
                     "citation_chunk_ids": cite,
                 }

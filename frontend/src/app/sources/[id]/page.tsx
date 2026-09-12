@@ -30,6 +30,7 @@ import {
 } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Progress } from "@/components/ui/progress";
+import { SourcePreview, type SourcePreviewHandle } from "@/components/source-preview";
 import { StructurePanel } from "@/components/structure-panel";
 import { Textarea } from "@/components/ui/textarea";
 import { api, streamTaskEvents, useAuth } from "@/lib/api";
@@ -230,30 +231,15 @@ export default function SourcePage() {
   // so this is just the loading fallback.
   const displayTitle = source.data?.title || source.data?.filename;
 
-  const videoRef = useRef<HTMLVideoElement>(null);
-  const [pdfPage, setPdfPage] = useState<number | null>(null);
-
-  // The PDF viewer honours `#page=N`, but only when the fragment changes the
-  // URL — so it is composed here instead of being mutated on the DOM node.
-  const pdfUrl = useMemo(
-    () => (pdfPage && fileUrl ? `${fileUrl}#page=${pdfPage}` : fileUrl),
-    [fileUrl, pdfPage]
-  );
+  const previewRef = useRef<SourcePreviewHandle>(null);
 
   const seekVideo = useCallback((seconds: number) => {
-    const el = videoRef.current;
-    if (!el) return;
-    el.currentTime = seconds;
-    // Chrome ignores `currentTime` while the media is still loading metadata.
-    const apply = () => {
-      el.currentTime = seconds;
-      void el.play().catch(() => undefined);
-    };
-    if (el.readyState >= 1) apply();
-    else el.addEventListener("loadedmetadata", apply, { once: true });
+    previewRef.current?.seek(seconds);
   }, []);
 
-  const jumpToPage = useCallback((page: number) => setPdfPage(page), []);
+  const jumpToPage = useCallback((page: number) => {
+    previewRef.current?.jumpToPage(page);
+  }, []);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -262,13 +248,13 @@ export default function SourcePage() {
     const time = params.get("t");
     if (page) {
       const n = Number(page);
-      if (Number.isFinite(n) && n > 0) setPdfPage(n);
+      if (Number.isFinite(n) && n > 0) jumpToPage(n);
     }
     if (time) {
       const seconds = Number(time);
       if (Number.isFinite(seconds)) seekVideo(seconds);
     }
-  }, [seekVideo, fileUrl]);
+  }, [seekVideo, jumpToPage, fileUrl]);
 
   return (
     <div className="flex h-screen flex-col overflow-hidden">
@@ -406,72 +392,14 @@ export default function SourcePage() {
       </div>
 
       {/* Two independent panes: left = original document, right = AI notes + your notes. */}
-      <main className="mx-auto grid w-full max-w-[1600px] min-h-0 flex-1 grid-cols-1 gap-4 px-4 py-4 lg:grid-cols-2">
-        <section className="flex min-h-0 flex-col overflow-hidden rounded-xl border bg-card">
-          <div className="flex shrink-0 items-center justify-between gap-2 border-b px-3 py-2">
-            <span className="flex items-center gap-2 text-sm font-medium">
-              原文
-              {!isVideo && pdfPage != null && (
-                <button
-                  type="button"
-                  onClick={() => setPdfPage(null)}
-                  className="rounded-full bg-primary/10 px-2 py-0.5 text-xs font-normal text-primary underline-offset-4 hover:underline"
-                  title="回到文档开头"
-                >
-                  已跳到第 {pdfPage} 页 · 复位
-                </button>
-              )}
-            </span>
-            <div className="flex gap-2">
-              <Button asChild size="sm" variant="ghost">
-                <a href={fileUrl} target="_blank" rel="noreferrer">
-                  新窗口打开
-                </a>
-              </Button>
-              <Button asChild size="sm" variant="ghost">
-                <a href={fileUrl} download={source.data?.filename || "source"}>
-                  下载
-                </a>
-              </Button>
-            </div>
-          </div>
-          <div
-            className={`min-h-0 flex-1 bg-muted/40 ${
-              // A scroll container around <video> only adds a second scrollbar
-              // and can clip the native control bar; the player sizes itself.
-              isVideo ? "flex items-center justify-center overflow-hidden" : "overflow-auto"
-            }`}
-          >
-            {!token ? null : isVideo ? (
-              <video
-                ref={videoRef}
-                src={fileUrl}
-                controls
-                playsInline
-                preload="metadata"
-                className="h-full w-full bg-black"
-                onError={(e) =>
-                  setBanner({
-                    kind: "err",
-                    text: `视频无法播放：${e.currentTarget.error?.message || "浏览器拒绝了该媒体文件"}`,
-                  })
-                }
-              >
-                你的浏览器不支持内嵌视频播放。
-              </video>
-            ) : kind === "image" ? (
-              // eslint-disable-next-line @next/next/no-img-element
-              <img src={fileUrl} alt={source.data?.filename || "source"} className="mx-auto block max-w-full" />
-            ) : source.data ? (
-              <iframe
-                key={pdfUrl}
-                src={pdfUrl}
-                title="source-pdf"
-                className="h-full min-h-[70vh] w-full"
-              />
-            ) : null}
-          </div>
-        </section>
+      <main className="mx-auto grid w-full max-w-[1600px] min-h-0 flex-1 grid-cols-1 items-stretch gap-4 px-4 py-4 lg:grid-cols-2">
+        <SourcePreview
+          ref={previewRef}
+          fileUrl={fileUrl}
+          kind={kind}
+          filename={source.data?.filename}
+          onError={(text) => setBanner({ kind: "err", text })}
+        />
 
         <section className="flex min-h-0 flex-col gap-4 overflow-y-auto pr-1">
           <Card>

@@ -202,8 +202,11 @@ async def regenerate_knowledge(
 ) -> RegenerateOut:
     """Re-run summary + knowledge extraction through the configured LLM."""
     source = await _owned_source(db, source_id, user.id)
-    if source.status != "ready":
-        raise HTTPException(status_code=409, detail="Source is not ready yet")
+    from app.services.pipeline import source_readiness_error
+
+    blocked = source_readiness_error(source)
+    if blocked:
+        raise HTTPException(status_code=409, detail=blocked)
     router_llm = ModelRouter(db)
     try:
         summary, points = await generate_summary_and_knowledge(

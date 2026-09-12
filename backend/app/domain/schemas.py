@@ -334,6 +334,7 @@ class SourceBundle(BaseModel):
     notes: list[dict] = Field(default_factory=list)
     quizzes: list[dict] = Field(default_factory=list)
     records: list[dict] = Field(default_factory=list)
+    tutor: list[dict] = Field(default_factory=list)
 
 
 class ImportRequest(BaseModel):
@@ -351,6 +352,8 @@ class ImportResult(BaseModel):
     records_created: int = 0
     summary_restored: bool = False
     knowledge_restored: int = 0
+    tutor_created: int = 0
+    tutor_skipped: int = 0
     mode: str = "merge"
 
 
