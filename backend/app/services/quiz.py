@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime
+from collections import OrderedDict
+from datetime import datetime, timezone
 from uuid import UUID
 
 from pydantic import BaseModel, Field
@@ -21,6 +22,17 @@ logger = logging.getLogger("app.quiz")
 
 QUIZ_PROMPT_VERSION = "quiz_generate.v2"
 EXPLAIN_PROMPT_VERSION = "quiz_explain.v1"
+
+# Per-section generate + merge only when the document is large enough that a
+# single 11k excerpt would still under-represent later chapters.
+_SECTION_GENERATE_MIN = 4
+_SECTION_GENERATE_CHUNK_MIN = 16
+_MAX_SECTIONS = 8
+_PER_SECTION_KEEP = 2
+
+SPEAKING_SCORING_NOTE = (
+    "口语按你输入的文本对照参考答案与评分细则批改，未做语音识别。"
+)
 
 
 # ---------------------------------------------------------------- generation
@@ -52,6 +64,73 @@ def _normalise_type(raw: str, options: list[str]) -> str:
     return value
 
 
+def major_sections(chunks: list) -> list[str]:
+    """Document section titles in reading order, skipping empty / outline-only."""
+    seen: OrderedDict[str, None] = OrderedDict()
+    for chunk in chunks:
+        title = (getattr(chunk, "section_title", None) or "").strip()
+        kind = getattr(chunk, "content_type", "") or ""
+        if title and kind != "outline":
+            seen[title] = None
+    return list(seen)
+
+
+def scoring_note_for(question_type: str) -> str:
+    return SPEAKING_SCORING_NOTE if question_type == "speaking" else ""
+
+
+async def _complete_quiz(router: ModelRouter, user_id: UUID, source_id: UUID, user_content: str):
+    return await router.complete(
+        task="quiz_generate",
+        messages=[
+            ChatMessage(role="system", content=load_prompt("quiz_generate.v2.txt")),
+            ChatMessage(role="user", content=user_content),
+        ],
+        user_id=user_id,
+        source_id=source_id,
+    )
+
+
+async def _generate_per_section(
+    chunks: list,
+    *,
+    router: ModelRouter,
+    user_id: UUID,
+    source_id: UUID,
+    sections: list[str],
+) -> tuple[str, list]:
+    """One generate call per major section, then merge.
+
+    Keeps the token budget per call small and guarantees later chapters appear.
+    """
+    outline = [c for c in chunks if (getattr(c, "content_type", "") or "") == "outline"]
+    collected: list = []
+    title = "Practice quiz"
+    for index, section in enumerate(sections[:_MAX_SECTIONS]):
+        scoped = outline + [
+            c for c in chunks if (getattr(c, "section_title", None) or "").strip() == section
+        ]
+        excerpts = format_document_excerpts(scoped or chunks, max_chars=3500)
+        user = (
+            f"Generate at most {_PER_SECTION_KEEP} questions ONLY for this section: "
+            f"{section}\nCover this section; do not invent other chapters.\n\n{excerpts}"
+        )
+        result = await _complete_quiz(router, user_id, source_id, user)
+        data = parse_json_object(result.content)
+        if index == 0 and data.get("title"):
+            title = str(data.get("title") or title)
+        kept = 0
+        for raw in data.get("questions") or []:
+            if not isinstance(raw, dict):
+                continue
+            raw["section_title"] = str(raw.get("section_title") or section)
+            collected.append(raw)
+            kept += 1
+            if kept >= _PER_SECTION_KEEP:
+                break
+    return title, collected
+
+
 async def generate_quiz(
     session: AsyncSession,
     *,
@@ -75,28 +154,30 @@ async def generate_quiz(
     known = {str(c.id) for c in chunks}
     # Structure-first sampling: a quiz that only ever sees the preface cannot be
     # "chapter by chapter", which is what the learner asked for.
-    excerpts = format_document_excerpts(chunks, max_chars=11000)
-    result = await router.complete(
-        task="quiz_generate",
-        messages=[
-            ChatMessage(role="system", content=load_prompt("quiz_generate.v2.txt")),
-            ChatMessage(role="user", content=excerpts),
-        ],
-        user_id=user_id,
-        source_id=source_id,
-    )
-    data = parse_json_object(result.content)
+    sections = major_sections(chunks)
+    if len(sections) >= _SECTION_GENERATE_MIN and len(chunks) >= _SECTION_GENERATE_CHUNK_MIN:
+        title, questions = await _generate_per_section(
+            chunks, router=router, user_id=user_id, source_id=source_id, sections=sections
+        )
+    else:
+        excerpts = format_document_excerpts(chunks, max_chars=11000)
+        result = await _complete_quiz(router, user_id, source_id, excerpts)
+        data = parse_json_object(result.content)
+        title = str(data.get("title") or "Practice quiz")
+        questions = data.get("questions") or []
 
+    # Always INSERT a new Quiz row. Prior quizzes and their attempts stay so
+    # regenerate does not wipe history. The GET latest endpoint returns this one.
     quiz = Quiz(
         source_id=source_id,
         user_id=user_id,
-        title=str(data.get("title") or "Practice quiz"),
+        title=title,
         prompt_version=QUIZ_PROMPT_VERSION,
+        created_at=datetime.now(timezone.utc),
     )
     session.add(quiz)
     await session.flush()
 
-    questions = data.get("questions") or []
     ordinal = 0
     for raw in questions:
         try:
@@ -212,6 +293,7 @@ async def grade_attempt(
     quiz_id: UUID,
     user_id: UUID,
     answers: dict[UUID, dict],
+    question_ids: list[UUID] | None = None,
 ) -> QuizAttempt:
     """Grade every question, then explain every question.
 
@@ -234,6 +316,11 @@ async def grade_attempt(
     )
     if not questions:
         raise ValueError("Quiz has no questions")
+    if question_ids:
+        wanted = {qid for qid in question_ids}
+        questions = [q for q in questions if q.id in wanted]
+        if not questions:
+            raise ValueError("No matching questions to grade")
 
     rows: list[dict] = []
     local: dict[int, tuple[bool, float]] = {}

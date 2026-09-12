@@ -13,18 +13,20 @@ from app.core.deps import get_current_user
 from app.domain.schemas import (
     QuizAttemptOut,
     QuizAttemptRequest,
+    QuizListOut,
     QuizOut,
     QuizQuestionPublic,
     QuizQuestionResult,
     QuizRecordSummary,
     QuizRecordsOut,
     QuizSectionResult,
+    QuizSummaryOut,
 )
 from app.models.quiz import Quiz, QuizAttempt, QuizQuestion
 from app.models.source import Source
 from app.models.user import User
 from app.services.llm.router import ModelRouter
-from app.services.quiz import generate_quiz, grade_attempt, load_details
+from app.services.quiz import generate_quiz, grade_attempt, load_details, scoring_note_for
 
 router = APIRouter(prefix="/api/v1", tags=["quiz"])
 
@@ -73,6 +75,7 @@ def _quiz_out(quiz: Quiz, questions: list[QuizQuestion]) -> QuizOut:
                 question_type=q.question_type,
                 section_title=q.section_title,
                 instructions=q.instructions,
+                scoring_note=scoring_note_for(q.question_type),
             )
             for q in questions
         ],
@@ -113,20 +116,56 @@ async def api_generate_quiz(
     return _quiz_out(quiz, await _questions(db, quiz.id))
 
 
+@router.get("/sources/{source_id}/quizzes", response_model=QuizListOut)
+async def list_quizzes(
+    source_id: UUID,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> QuizListOut:
+    """All generated quiz versions for a source. Newest first. History is kept."""
+    await _owned_source(db, source_id, user.id)
+    quizzes = (
+        (
+            await db.execute(
+                select(Quiz)
+                .where(Quiz.source_id == source_id, Quiz.user_id == user.id)
+                .order_by(Quiz.created_at.desc(), Quiz.id.desc())
+            )
+        )
+        .scalars()
+        .all()
+    )
+    summaries: list[QuizSummaryOut] = []
+    for quiz in quizzes:
+        questions = await _questions(db, quiz.id)
+        summaries.append(
+            QuizSummaryOut(
+                id=quiz.id,
+                source_id=quiz.source_id,
+                title=quiz.title,
+                prompt_version=quiz.prompt_version,
+                created_at=quiz.created_at,
+                question_count=len(questions),
+                sections=_sections_of(questions),
+            )
+        )
+    return QuizListOut(source_id=source_id, quizzes=summaries)
+
+
 @router.get("/sources/{source_id}/quiz", response_model=QuizOut)
 async def get_latest_quiz(
     source_id: UUID,
+    quiz_id: UUID | None = None,
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
 ) -> QuizOut:
     await _owned_source(db, source_id, user.id)
-    quiz = (
-        await db.execute(
-            select(Quiz)
-            .where(Quiz.source_id == source_id, Quiz.user_id == user.id)
-            .order_by(Quiz.created_at.desc())
-        )
-    ).scalars().first()
+    query = select(Quiz).where(Quiz.source_id == source_id, Quiz.user_id == user.id)
+    if quiz_id is not None:
+        query = query.where(Quiz.id == quiz_id)
+    else:
+        query = query.order_by(Quiz.created_at.desc(), Quiz.id.desc())
+    quiz = (await db.execute(query)).scalars().first()
     if quiz is None:
         raise HTTPException(status_code=404, detail="No quiz yet")
     return _quiz_out(quiz, await _questions(db, quiz.id))
@@ -156,6 +195,7 @@ def _attempt_out(attempt: QuizAttempt, questions: list[QuizQuestion]) -> QuizAtt
                 ai_explanation=q_explanation,
                 explanation=q_explanation,
                 chunk_ids=[UUID(x) for x in json.loads(q.chunk_ids_json or "[]")] if q else [],
+                scoring_note=scoring_note_for(row.get("question_type") or (q.question_type if q else "")),
             )
         )
     return QuizAttemptOut(
@@ -184,7 +224,12 @@ async def attempt_quiz(
     }
     try:
         attempt = await grade_attempt(
-            db, router=ModelRouter(db), quiz_id=quiz_id, user_id=user.id, answers=answers
+            db,
+            router=ModelRouter(db),
+            quiz_id=quiz_id,
+            user_id=user.id,
+            answers=answers,
+            question_ids=body.question_ids,
         )
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc

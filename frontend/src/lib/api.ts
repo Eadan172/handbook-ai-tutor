@@ -69,3 +69,55 @@ export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
     throw new Error(`后端返回了非 JSON 响应（${path}）· Malformed response from the API.`);
   }
 }
+
+export type TaskEvent = {
+  id: string;
+  source_id: string;
+  status: string;
+  progress: number;
+  step: string;
+  message: string | null;
+};
+
+/**
+ * Live task progress via the existing SSE endpoint.
+ *
+ * EventSource cannot send Authorization; fetch + ReadableStream can.
+ * Callers should keep a poll fallback if this returns "failed".
+ */
+export async function streamTaskEvents(
+  taskId: string,
+  onEvent: (event: TaskEvent) => void,
+  signal?: AbortSignal
+): Promise<"live" | "failed"> {
+  const token = useAuth.getState().token;
+  const headers = new Headers();
+  if (token) headers.set("Authorization", `Bearer ${token}`);
+  try {
+    const res = await fetch(`${apiBase}/api/v1/tasks/${taskId}/events`, { headers, signal });
+    if (!res.ok || !res.body) return "failed";
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const parts = buffer.split("\n\n");
+      buffer = parts.pop() || "";
+      for (const part of parts) {
+        const line = part.split("\n").find((l) => l.startsWith("data:"));
+        if (!line) continue;
+        try {
+          onEvent(JSON.parse(line.slice(5).trim()) as TaskEvent);
+        } catch {
+          /* ignore a torn frame */
+        }
+      }
+    }
+    return "live";
+  } catch {
+    if (signal?.aborted) return "live";
+    return "failed";
+  }
+}

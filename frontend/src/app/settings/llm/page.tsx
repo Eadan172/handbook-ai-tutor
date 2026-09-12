@@ -24,6 +24,7 @@ import {
 import { AppHeader } from "@/components/app-header";
 import { EmbedSettings } from "@/components/embed-settings";
 import { PathSettings } from "@/components/path-settings";
+import { UsagePanel } from "@/components/usage-panel";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -409,6 +410,8 @@ export default function LlmSettingsPage() {
             {outcome && <OutcomeBlock outcome={outcome} />}
           </CardContent>
         </Card>
+
+        <UsagePanel />
       </main>
     </div>
   );

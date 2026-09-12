@@ -162,7 +162,24 @@ class FasterWhisperSTT(STTProvider):
             out: list[TranscriptSegment] = []
             try:
                 for wav, offset in chunks:
-                    out.extend(_transcribe_one(model, wav, offset))
+                    last_exc: Exception | None = None
+                    done = False
+                    for _attempt in range(3):
+                        try:
+                            out.extend(_transcribe_one(model, wav, offset))
+                            done = True
+                            break
+                        except Exception as exc:
+                            last_exc = exc
+                    if not done:
+                        detail = str(last_exc)[:160] if last_exc else "unknown error"
+                        out.append(
+                            TranscriptSegment(
+                                start=offset,
+                                end=offset + self.CHUNK_SECONDS,
+                                text=f"[STT window at {offset:.0f}s failed after retry: {detail}]",
+                            )
+                        )
             finally:
                 for wav, _ in chunks:
                     wav.unlink(missing_ok=True)
@@ -224,3 +241,85 @@ def get_stt() -> STTProvider:
     if get_settings().stt_provider == "faster_whisper":
         return FasterWhisperSTT()
     return MockSTT()
+
+
+@dataclass
+class SegmentTranscript:
+    """STT result plus an honest note about retries / mock provenance."""
+
+    segments: list[TranscriptSegment]
+    note: str
+    failed_windows: int = 0
+    total_windows: int = 1
+
+
+async def transcribe_audio_resilient(
+    stt: STTProvider,
+    wav: Path,
+    *,
+    chunk_seconds: float = 300.0,
+    attempts: int = 3,
+) -> SegmentTranscript:
+    """Transcribe audio, retrying failed time windows independently.
+
+    A single bad STT/summarize window must not force a re-run of the whole
+    recording. Failed windows are labelled in the transcript so the learner
+    can see what is missing instead of getting a silent gap.
+    """
+    duration = await probe_duration(wav)
+    cleanup: list[Path] = []
+    if duration <= 0 or duration <= chunk_seconds * 1.2:
+        windows: list[tuple[Path, float]] = [(wav, 0.0)]
+    else:
+        windows = await asyncio.to_thread(_split_wav_sync, wav, chunk_seconds)
+        cleanup = [path for path, _ in windows if path != wav]
+
+    all_segs: list[TranscriptSegment] = []
+    failed = 0
+    try:
+        for index, (path, offset) in enumerate(windows, 1):
+            last_exc: Exception | None = None
+            succeeded = False
+            for _attempt in range(max(1, attempts)):
+                try:
+                    segs = await stt.transcribe(path)
+                    for seg in segs:
+                        # Split pieces report timestamps relative to the piece.
+                        shift = offset if path != wav else 0.0
+                        all_segs.append(
+                            TranscriptSegment(
+                                start=float(seg.start) + shift,
+                                end=float(seg.end) + shift,
+                                text=seg.text,
+                            )
+                        )
+                    succeeded = True
+                    break
+                except Exception as exc:
+                    last_exc = exc
+            if not succeeded:
+                failed += 1
+                end = offset + (chunk_seconds if duration <= 0 else min(chunk_seconds, max(0.0, duration - offset)))
+                detail = str(last_exc)[:160] if last_exc else "unknown error"
+                all_segs.append(
+                    TranscriptSegment(
+                        start=offset,
+                        end=end,
+                        text=f"[segment {index} transcription failed after {attempts} attempts: {detail}]",
+                    )
+                )
+    finally:
+        for path in cleanup:
+            path.unlink(missing_ok=True)
+
+    note = f"STT {stt.name} ({len(all_segs)} segments, {len(windows)} window(s))"
+    if stt.name == "mock":
+        note += " · mock STT (not a real lecture transcript)"
+    if failed:
+        note += f" · {failed}/{len(windows)} window(s) failed after retry"
+    return SegmentTranscript(
+        segments=all_segs,
+        note=note,
+        failed_windows=failed,
+        total_windows=len(windows),
+    )

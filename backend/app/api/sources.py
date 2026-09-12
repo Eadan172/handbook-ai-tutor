@@ -149,7 +149,8 @@ async def list_sources(
         .scalars()
         .all()
     )
-    return [SourceOut.model_validate(r) for r in rows]
+    latest = await _latest_tasks_by_source(db, [r.id for r in rows])
+    return [_source_out_with_task(r, latest.get(r.id)) for r in rows]
 
 
 @router.get("/{source_id}", response_model=SourceOut)
@@ -164,9 +165,36 @@ async def get_source(
             select(Task).where(Task.source_id == source.id).order_by(Task.created_at.desc())
         )
     ).scalars().first()
+    return _source_out_with_task(source, task)
+
+
+def _source_out_with_task(source: Source, task: Task | None) -> SourceOut:
+    """Attach the latest ingest task so the UI can stream progress and show provenance."""
     out = SourceOut.model_validate(source)
-    out.task_id = task.id if task else None
+    if task is None:
+        return out
+    out.task_id = task.id
+    out.task_status = task.status
+    out.task_progress = task.progress
+    out.task_step = task.step
+    out.task_message = task.message
+    out.extraction_note = task.message
     return out
+
+
+async def _latest_tasks_by_source(db: AsyncSession, source_ids: list[UUID]) -> dict[UUID, Task]:
+    if not source_ids:
+        return {}
+    rows = (
+        (await db.execute(select(Task).where(Task.source_id.in_(source_ids)).order_by(Task.created_at.desc())))
+        .scalars()
+        .all()
+    )
+    latest: dict[UUID, Task] = {}
+    for task in rows:
+        if task.source_id not in latest:
+            latest[task.source_id] = task
+    return latest
 
 
 async def _owned_source(db: AsyncSession, source_id: UUID, user_id: UUID) -> Source:

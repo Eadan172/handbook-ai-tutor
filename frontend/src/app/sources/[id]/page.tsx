@@ -17,6 +17,8 @@ import {
   Upload,
 } from "lucide-react";
 import { AppHeader } from "@/components/app-header";
+import { ExtractionNote } from "@/components/extraction-note";
+import { UsagePanel } from "@/components/usage-panel";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -30,7 +32,7 @@ import { Input } from "@/components/ui/input";
 import { Progress } from "@/components/ui/progress";
 import { StructurePanel } from "@/components/structure-panel";
 import { Textarea } from "@/components/ui/textarea";
-import { api, useAuth } from "@/lib/api";
+import { api, streamTaskEvents, useAuth } from "@/lib/api";
 import {
   authedUrl,
   downloadJson,
@@ -58,6 +60,8 @@ export default function SourcePage() {
   const router = useRouter();
   const queryClient = useQueryClient();
   const [banner, setBanner] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
+  const [liveTask, setLiveTask] = useState<Task | null>(null);
+  const [streaming, setStreaming] = useState(false);
 
   useEffect(() => {
     if (!token) router.replace("/login");
@@ -73,18 +77,58 @@ export default function SourcePage() {
     // and made scrolling stutter for no reason.
     refetchInterval: (q) => {
       const status = q.state.data?.status;
-      return !status || status === "ready" || status === "failed" ? false : 1500;
+      if (!status || status === "ready" || status === "failed") return false;
+      return streaming ? false : 1500;
     },
   });
 
   const taskId = source.data?.task_id;
+  const statusForPoll = source.data?.status;
+  const busy = !!statusForPoll && statusForPoll !== "ready" && statusForPoll !== "failed";
   const task = useQuery({
     queryKey: ["task", taskId],
     queryFn: () => api<Task>(`/api/v1/tasks/${taskId}`),
     enabled: !!token && !!taskId,
-    refetchInterval: (q) =>
-      q.state.data?.status === "succeeded" || q.state.data?.status === "failed" ? false : 1000,
+    refetchInterval: (q) => {
+      if (streaming) return false;
+      return q.state.data?.status === "succeeded" || q.state.data?.status === "failed" ? false : 1000;
+    },
   });
+
+  useEffect(() => {
+    if (!token || !taskId || !busy) {
+      setStreaming(false);
+      return;
+    }
+    const ac = new AbortController();
+    let gotEvent = false;
+    void streamTaskEvents(
+      taskId,
+      (event) => {
+        gotEvent = true;
+        setStreaming(true);
+        setLiveTask({
+          id: event.id,
+          source_id: event.source_id,
+          kind: "ingest",
+          status: event.status,
+          progress: event.progress,
+          step: event.step,
+          message: event.message,
+        });
+        if (event.status === "succeeded" || event.status === "failed") {
+          void queryClient.invalidateQueries({ queryKey: ["source", id] });
+          void queryClient.invalidateQueries({ queryKey: ["task", taskId] });
+        }
+      },
+      ac.signal
+    ).then((result) => {
+      if (result === "failed" && !gotEvent) setStreaming(false);
+    });
+    return () => ac.abort();
+  }, [token, taskId, busy, id, queryClient]);
+
+  const taskView = liveTask || task.data;
 
   const status = source.data?.status;
   const ready = status === "ready";
@@ -211,6 +255,21 @@ export default function SourcePage() {
 
   const jumpToPage = useCallback((page: number) => setPdfPage(page), []);
 
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const params = new URLSearchParams(window.location.search);
+    const page = params.get("page");
+    const time = params.get("t");
+    if (page) {
+      const n = Number(page);
+      if (Number.isFinite(n) && n > 0) setPdfPage(n);
+    }
+    if (time) {
+      const seconds = Number(time);
+      if (Number.isFinite(seconds)) seekVideo(seconds);
+    }
+  }, [seekVideo, fileUrl]);
+
   return (
     <div className="flex h-screen flex-col overflow-hidden">
       <AppHeader />
@@ -321,14 +380,14 @@ export default function SourcePage() {
                 <div>
                   <CardTitle className="text-sm">流水线进度</CardTitle>
                   <CardDescription>
-                    {task.data?.step || status || "…"}
-                    {task.data?.message ? ` · ${task.data.message}` : ""}
+                    {taskView?.step || status || "…"}
+                    {taskView?.message ? ` · ${taskView.message}` : ""}
                   </CardDescription>
                 </div>
               </div>
             </CardHeader>
             <CardContent>
-              <Progress value={task.data?.progress ?? (ready ? 100 : 5)} />
+              <Progress value={taskView?.progress ?? (ready ? 100 : 5)} />
               {failed && source.data?.error_message && (
                 <p className="mt-2 flex items-start gap-2 text-sm text-destructive break-all">
                   <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
@@ -337,6 +396,12 @@ export default function SourcePage() {
               )}
             </CardContent>
           </Card>
+        )}
+
+        {ready && (source.data?.extraction_note || source.data?.task_message) && (
+          <div className="mt-3">
+            <ExtractionNote note={source.data.extraction_note || source.data.task_message} />
+          </div>
         )}
       </div>
 
@@ -471,6 +536,8 @@ export default function SourcePage() {
             onJumpToPage={jumpToPage}
             onSeek={seekVideo}
           />
+
+          <UsagePanel sourceId={id} compact />
 
           <NotesPanel
             sourceId={id}

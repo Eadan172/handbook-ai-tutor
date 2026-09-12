@@ -9,7 +9,7 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy import select
 
 from app.core.db import SessionLocal, get_db
-from app.core.deps import get_current_user
+from app.core.deps import get_current_user, get_current_user_allow_query_token
 from app.domain.schemas import TaskOut
 from app.models.task import Task
 from app.models.user import User
@@ -34,7 +34,7 @@ async def get_task(
 async def task_events(
     task_id: UUID,
     db: AsyncSession = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(get_current_user_allow_query_token),
 ) -> StreamingResponse:
     task = (await db.execute(select(Task).where(Task.id == task_id))).scalar_one_or_none()
     if task is None or task.user_id != user.id:

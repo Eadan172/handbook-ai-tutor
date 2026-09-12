@@ -373,12 +373,58 @@ def format_document_excerpts(chunks: list, *, max_chars: int = 10000) -> str:
 
     if rest and used < max_chars:
         remaining = max_chars - used
-        # Stride sampling keeps coverage even when one chapter is 20x another.
-        stride = max(1, len(rest) // max(1, remaining // 500))
-        picked = rest[::stride]
-        for chunk in picked:
-            if not add(chunk):
+        buckets: dict[str, list] = {}
+        order: list[str] = []
+        for chunk in rest:
+            key = getattr(chunk, "section_title", "") or ""
+            if key not in buckets:
+                buckets[key] = []
+                order.append(key)
+            buckets[key].append(chunk)
+
+        # Evenly pick sections across the book so chapter N is not crowded out
+        # by a long preface. Always keep the first and last named sections.
+        section_slots = max(1, remaining // 280)
+        if len(order) <= section_slots:
+            chosen_keys = order
+        else:
+            step = len(order) / section_slots
+            idxs = {0, len(order) - 1}
+            for i in range(section_slots):
+                idxs.add(min(int(i * step), len(order) - 1))
+            chosen_keys = [order[i] for i in sorted(idxs)]
+
+        queues: list[list] = []
+        for key in chosen_keys:
+            group = buckets[key]
+            stride = max(1, len(group) // 4)
+            queues.append(group[::stride] or group[:1])
+
+        # First and last chosen sections are reserved so a long preface cannot
+        # spend the budget before chapter N is seen.
+        reserved: list[list] = []
+        fill: list[list] = []
+        if queues:
+            reserved.append(queues[0])
+        if len(queues) > 1:
+            reserved.append(queues[-1])
+        if len(queues) > 2:
+            fill = queues[1:-1]
+
+        for group in reserved + fill:
+            if group and not add(group[0]):
                 break
+        idx = 1
+        while used < max_chars:
+            progressed = False
+            for group in reserved + fill:
+                if idx < len(group) and add(group[idx]):
+                    progressed = True
+                if used >= max_chars:
+                    break
+            if not progressed:
+                break
+            idx += 1
     return "\n\n".join(parts)
 
 

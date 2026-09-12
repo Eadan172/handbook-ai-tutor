@@ -36,6 +36,12 @@ export type Source = {
   /** printed_page - physical page_number, recovered from the running heads. */
   page_offset?: number | null;
   page_count?: number | null;
+  /** Latest ingest task message: OCR / STT / mock provenance. */
+  extraction_note?: string | null;
+  task_status?: string | null;
+  task_progress?: number | null;
+  task_step?: string | null;
+  task_message?: string | null;
 };
 
 export type OutlineEntry = {
@@ -142,6 +148,7 @@ export type QuizQuestion = {
   question_type: QuestionType;
   section_title: string;
   instructions: string;
+  scoring_note?: string;
 };
 
 export type Quiz = {
@@ -152,6 +159,21 @@ export type Quiz = {
   created_at: string | null;
   sections: string[];
   questions: QuizQuestion[];
+};
+
+export type QuizSummary = {
+  id: string;
+  source_id: string;
+  title: string;
+  prompt_version: string;
+  created_at: string | null;
+  question_count: number;
+  sections: string[];
+};
+
+export type QuizList = {
+  source_id: string;
+  quizzes: QuizSummary[];
 };
 
 export type QuestionResult = {
@@ -170,6 +192,7 @@ export type QuestionResult = {
   ai_explanation: string;
   explanation: string;
   chunk_ids: string[];
+  scoring_note?: string;
 };
 
 export type SectionResult = {
@@ -340,6 +363,36 @@ export type EmbedOut = {
   overrides_file: string;
   changed: string[];
   warnings: string[];
+};
+
+export type UsageTaskRow = {
+  task: string;
+  provider: string;
+  model: string;
+  calls: number;
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
+};
+
+export type UsageSourceRow = {
+  source_id: string | null;
+  source_title: string | null;
+  source_filename: string | null;
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
+  calls: number;
+  by_task: UsageTaskRow[];
+};
+
+export type UsageOut = {
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
+  calls: number;
+  by_source: UsageSourceRow[];
+  by_task: UsageTaskRow[];
 };
 
 export type EmbedTestOut = {

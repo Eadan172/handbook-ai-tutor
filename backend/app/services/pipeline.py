@@ -30,7 +30,7 @@ from app.services.pdf_parser import (
 )
 from app.services.progress import ProgressService
 from app.services.storage import get_storage
-from app.services.stt import extract_audio, get_stt
+from app.services.stt import extract_audio, get_stt, transcribe_audio_resilient
 from app.utils.jsonutil import parse_json_object
 
 
@@ -288,16 +288,22 @@ class IngestPipeline:
         try:
             await self.progress.update(task_id, progress=25, step="stt")
             stt = get_stt()
-            segments = await stt.transcribe(wav)
+            transcript = await transcribe_audio_resilient(stt, wav)
+            segments = transcript.segments
             if not segments:
                 raise IngestError(
                     "Speech-to-text produced no segments. The recording may have no "
                     "usable audio track."
                 )
-            await self.progress.update(task_id, progress=40, step="chapters")
+            await self.progress.update(
+                task_id,
+                progress=40,
+                step="chapters",
+                message=transcript.note,
+            )
             chapters = await self._video_chapters(source, segments, duration)
             self._record_video_structure(source, chapters, duration)
-            note = f"STT {stt.name} ({len(segments)} segments)"
+            note = transcript.note
             if chapters:
                 note += f" · {len(chapters)} chapters"
             if self.extraction_note:

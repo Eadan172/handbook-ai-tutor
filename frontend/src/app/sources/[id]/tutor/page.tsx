@@ -2,7 +2,7 @@
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useParams, useRouter } from "next/navigation";
-import { FormEvent, useEffect, useRef, useState } from "react";
+import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertCircle,
   Bot,
@@ -13,27 +13,46 @@ import {
   User,
 } from "lucide-react";
 import { AppHeader } from "@/components/app-header";
+import { SourcePreview, type SourcePreviewHandle } from "@/components/source-preview";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { api, useAuth } from "@/lib/api";
-import { CONTENT_TYPE_LABELS, type Citation } from "@/lib/types";
+import { authedUrl } from "@/lib/io";
+import { CONTENT_TYPE_LABELS, type Citation, type Source } from "@/lib/types";
 
 type Msg = { id: string; role: string; content: string; citations: Citation[] };
 
-function CitationCard({ c }: { c: Citation }) {
+function CitationCard({ c, onJump }: { c: Citation; onJump?: (c: Citation) => void }) {
   const typeLabel = CONTENT_TYPE_LABELS[c.content_type] ?? c.content_type;
+  const canJump = c.start_time != null || c.page_number != null || c.printed_page != null;
   return (
-    <div className="space-y-1.5 rounded-lg border border-border/60 bg-background/60 p-2.5 text-xs">
+    <button
+      type="button"
+      onClick={() => onJump?.(c)}
+      disabled={!onJump || !canJump}
+      className={[
+        "w-full space-y-1.5 rounded-lg border border-border/60 bg-background/60 p-2.5 text-left text-xs",
+        onJump && canJump
+          ? "cursor-pointer transition-colors hover:border-primary/50 hover:bg-primary/[0.04]"
+          : "",
+      ].join(" ")}
+    >
       <div className="flex flex-wrap items-center gap-1.5">
         {c.printed_page != null && <Badge>书内 p.{c.printed_page}</Badge>}
         {c.page_number != null && c.page_number !== c.printed_page && (
           <Badge variant="outline">PDF p.{c.page_number}</Badge>
         )}
-        {c.printed_page == null && c.page_number == null && (
+        {c.start_time != null && (
+          <Badge variant="outline">
+            {Math.floor(c.start_time / 60)}:{String(Math.floor(c.start_time % 60)).padStart(2, "0")}
+          </Badge>
+        )}
+        {c.printed_page == null && c.page_number == null && c.start_time == null && (
           <Badge variant="outline">{c.locator || c.chunk_id.slice(0, 8)}</Badge>
         )}
         <Badge variant="soft">{typeLabel}</Badge>
+        {canJump && onJump && <span className="text-primary">点击跳转原文</span>}
         {c.score != null && (
           <span className="text-muted-foreground">score {c.score.toFixed(2)}</span>
         )}
@@ -44,7 +63,7 @@ function CitationCard({ c }: { c: Citation }) {
       <div className="max-h-48 overflow-y-auto whitespace-pre-wrap pr-1 text-muted-foreground leading-relaxed">
         {c.quote}
       </div>
-    </div>
+    </button>
   );
 }
 
@@ -56,16 +75,28 @@ export default function TutorPage() {
   const qc = useQueryClient();
   const [message, setMessage] = useState("What is the main idea of this source?");
   const scrollRef = useRef<HTMLDivElement>(null);
+  const previewRef = useRef<SourcePreviewHandle>(null);
 
   useEffect(() => {
     if (!token) router.replace("/login");
   }, [token, router]);
+
+  const source = useQuery({
+    queryKey: ["source", id],
+    queryFn: () => api<Source>(`/api/v1/sources/${id}`),
+    enabled: !!token && !!id,
+  });
 
   const history = useQuery({
     queryKey: ["tutor", id],
     queryFn: () => api<Msg[]>(`/api/v1/sources/${id}/tutor/messages`),
     enabled: !!token,
   });
+
+  const fileUrl = useMemo(
+    () => (id && token ? authedUrl(`/api/v1/sources/${id}/file`) : ""),
+    [id, token]
+  );
 
   const send = useMutation({
     mutationFn: (text: string) =>
@@ -94,7 +125,14 @@ export default function TutorPage() {
     <div className="flex h-screen flex-col overflow-hidden bg-background">
       <AppHeader />
 
-      <div className="mx-auto flex w-full max-w-3xl min-h-0 flex-1 flex-col px-4 sm:px-6">
+      <div className="mx-auto grid w-full max-w-[1600px] min-h-0 flex-1 grid-cols-1 gap-4 px-4 py-4 lg:grid-cols-2">
+        <SourcePreview
+          ref={previewRef}
+          fileUrl={fileUrl}
+          kind={source.data?.kind}
+          filename={source.data?.filename}
+        />
+      <div className="mx-auto flex w-full min-h-0 flex-1 flex-col">
         <div className="flex items-center gap-3 border-b py-4">
           <span className="flex h-10 w-10 items-center justify-center rounded-xl bg-gradient-brand text-white shadow-soft">
             <MessageSquareQuote className="h-5 w-5" />
@@ -129,7 +167,13 @@ export default function TutorPage() {
             </div>
           )}
           {(history.data || []).map((m) => (
-            <Bubble key={m.id} role={m.role} content={m.content} citations={m.citations} />
+            <Bubble
+              key={m.id}
+              role={m.role}
+              content={m.content}
+              citations={m.citations}
+              onJump={(c) => previewRef.current?.jumpToCitation(c)}
+            />
           ))}
           {send.isPending && (
             <Bubble role="assistant" content="" pending citations={[]} />
@@ -178,6 +222,7 @@ export default function TutorPage() {
           </div>
         </form>
       </div>
+      </div>
     </div>
   );
 }
@@ -187,11 +232,13 @@ function Bubble({
   content,
   citations,
   pending = false,
+  onJump,
 }: {
   role: string;
   content: string;
   citations: Citation[];
   pending?: boolean;
+  onJump?: (c: Citation) => void;
 }) {
   const isUser = role === "user";
   return (
@@ -228,7 +275,7 @@ function Bubble({
               <div className="mt-2 space-y-2 border-t pt-2">
                 <p className="text-xs font-medium text-muted-foreground">引用来源</p>
                 {citations.map((c) => (
-                  <CitationCard key={c.chunk_id} c={c} />
+                  <CitationCard key={c.chunk_id} c={c} onJump={onJump} />
                 ))}
               </div>
             )}

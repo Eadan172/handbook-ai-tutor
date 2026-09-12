@@ -30,9 +30,11 @@ import type {
   ImportResult,
   QuestionResult,
   Quiz,
+  QuizList,
   QuizQuestion,
   QuizRecord,
   Source,
+  SourceStructure,
 } from "@/lib/types";
 
 type Draft = { selected_index?: number; text_answer?: string };
@@ -48,6 +50,8 @@ export default function QuizPage() {
   const [result, setResult] = useState<Attempt | null>(null);
   const [viewing, setViewing] = useState<Attempt | null>(null);
   const [banner, setBanner] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
+  const [selectedQuizId, setSelectedQuizId] = useState<string | null>(null);
+  const [retryIds, setRetryIds] = useState<string[] | null>(null);
 
   useEffect(() => {
     if (!token) router.replace("/login");
@@ -60,9 +64,20 @@ export default function QuizPage() {
     retry: false,
   });
 
+  const quizList = useQuery({
+    queryKey: ["quizzes", id],
+    queryFn: () => api<QuizList>(`/api/v1/sources/${id}/quizzes`),
+    enabled: !!token && !!id,
+  });
+
   const quizQuery = useQuery({
-    queryKey: ["quiz", id],
-    queryFn: () => api<Quiz>(`/api/v1/sources/${id}/quiz`),
+    queryKey: ["quiz", id, selectedQuizId],
+    queryFn: () =>
+      api<Quiz>(
+        selectedQuizId
+          ? `/api/v1/sources/${id}/quiz?quiz_id=${selectedQuizId}`
+          : `/api/v1/sources/${id}/quiz`
+      ),
     enabled: !!token && !!id,
     retry: false,
   });
@@ -73,14 +88,23 @@ export default function QuizPage() {
     enabled: !!token && !!id,
   });
 
+  const structure = useQuery({
+    queryKey: ["structure", id],
+    queryFn: () => api<SourceStructure>(`/api/v1/sources/${id}/structure`),
+    enabled: !!token && !!id,
+  });
+
   const generate = useMutation({
     mutationFn: () => api<Quiz>(`/api/v1/sources/${id}/quiz/generate`, { method: "POST" }),
-    onSuccess: () => {
+    onSuccess: (quiz) => {
       setResult(null);
       setViewing(null);
       setDrafts({});
-      void quizQuery.refetch();
-      setBanner({ kind: "ok", text: "已生成新一套练习题" });
+      setRetryIds(null);
+      setSelectedQuizId(quiz.id);
+      void queryClient.invalidateQueries({ queryKey: ["quizzes", id] });
+      void queryClient.invalidateQueries({ queryKey: ["quiz", id] });
+      setBanner({ kind: "ok", text: "已生成新一套练习题（此前的题目与作答记录仍保留）" });
     },
     onError: (err) => setBanner({ kind: "err", text: err instanceof Error ? err.message : "生成失败" }),
   });
@@ -90,16 +114,20 @@ export default function QuizPage() {
       api<Attempt>(`/api/v1/quizzes/${quizId}/attempt`, {
         method: "POST",
         body: JSON.stringify({
-          answers: Object.entries(drafts).map(([question_id, d]) => ({
-            question_id,
-            selected_index: d.selected_index ?? null,
-            text_answer: d.text_answer ?? null,
-          })),
+          question_ids: retryIds,
+          answers: Object.entries(drafts)
+            .filter(([question_id]) => !retryIds || retryIds.includes(question_id))
+            .map(([question_id, d]) => ({
+              question_id,
+              selected_index: d.selected_index ?? null,
+              text_answer: d.text_answer ?? null,
+            })),
         }),
       }),
     onSuccess: (attempt) => {
       setResult(attempt);
       setViewing(null);
+      setRetryIds(null);
       void queryClient.invalidateQueries({ queryKey: ["quiz-records", id] });
       setBanner({
         kind: "ok",
@@ -109,8 +137,14 @@ export default function QuizPage() {
     onError: (err) => setBanner({ kind: "err", text: err instanceof Error ? err.message : "提交失败" }),
   });
 
-  const quiz = generate.data || quizQuery.data;
-  const sections = useMemo(() => groupBySection(quiz?.questions || []), [quiz]);
+  const quiz = quizQuery.data || generate.data;
+  const visibleQuestions = useMemo(() => {
+    if (!quiz) return [];
+    if (!retryIds) return quiz.questions;
+    const wanted = new Set(retryIds);
+    return quiz.questions.filter((q) => wanted.has(q.id));
+  }, [quiz, retryIds]);
+  const sections = useMemo(() => groupBySection(visibleQuestions), [visibleQuestions]);
 
   function exportAll() {
     const payload = {
@@ -176,10 +210,31 @@ export default function QuizPage() {
               onClick={() => generate.mutate()}
               pending={generate.isPending}
             >
-              {generate.isPending ? "生成中…" : quiz ? "重新生成" : "生成练习题"}
+              {generate.isPending ? "生成中…" : quiz ? "再生成一套" : "生成练习题"}
             </Button>
           </div>
         </div>
+        {quizList.data && quizList.data.quizzes.length > 1 && (
+          <div className="flex flex-wrap items-center gap-2 text-sm">
+            <span className="text-muted-foreground">历史题组</span>
+            <select
+              className="rounded-md border bg-background px-2 py-1 text-sm"
+              value={selectedQuizId || quiz?.id || ""}
+              onChange={(e) => {
+                setSelectedQuizId(e.target.value);
+                setResult(null);
+                setRetryIds(null);
+                setDrafts({});
+              }}
+            >
+              {quizList.data.quizzes.map((item) => (
+                <option key={item.id} value={item.id}>
+                  {item.title} · {item.question_count} 题 · {item.created_at || ""}
+                </option>
+              ))}
+            </select>
+          </div>
+        )}
 
         {banner && (
           <div
@@ -226,8 +281,9 @@ export default function QuizPage() {
                   <div>
                     <CardTitle className="text-base">{quiz.title}</CardTitle>
                     <CardDescription>
-                      章节练习 · {quiz.questions.length} 题 · {quiz.sections.length} 个章节 ·{" "}
-                      {quiz.prompt_version}。提交前不显示答案。
+                      {retryIds ? `错题重练 · ${visibleQuestions.length} 题` : `章节练习 · ${quiz.questions.length} 题`}
+                      {" · "}
+                      {quiz.sections.length} 个章节 · {quiz.prompt_version}。提交前不显示答案。
                     </CardDescription>
                   </div>
                 </div>
@@ -251,11 +307,24 @@ export default function QuizPage() {
                 ))}
                 <div className="flex items-center gap-3 border-t pt-2">
                   <Button variant="gradient" onClick={() => submit.mutate(quiz.id)} pending={submit.isPending}>
-                    {submit.isPending ? "批改中…" : "提交并生成解析"}
+                    {submit.isPending ? "批改中…" : retryIds ? "提交错题重练" : "提交并生成解析"}
                     {!submit.isPending && <Send />}
                   </Button>
+                  {retryIds && (
+                    <Button
+                      variant="outline"
+                      onClick={() => {
+                        setRetryIds(null);
+                        setDrafts({});
+                      }}
+                    >
+                      取消重练，回到全套
+                    </Button>
+                  )}
                   <span className="text-xs text-muted-foreground">
-                    提交后会记录时间，并为全部题目生成答案解析。
+                    {retryIds
+                      ? "只批改本次勾选的错题；原提交记录仍保留。"
+                      : "提交后会记录时间，并为全部题目生成答案解析。重新生成不会删除旧题组。"}
                   </span>
                 </div>
               </CardContent>
@@ -264,6 +333,16 @@ export default function QuizPage() {
             {result && (
               <AnswerSheet
                 title="本次提交"
+                sourceId={id}
+                structure={structure.data}
+                onRetryFailed={() => {
+                  const failed = result.results.filter((r) => !r.correct).map((r) => r.question_id);
+                  if (!failed.length) return;
+                  setRetryIds(failed);
+                  setDrafts({});
+                  setResult(null);
+                  setBanner({ kind: "ok", text: `已载入 ${failed.length} 道错题，答完后再次提交。` });
+                }}
                 attempt={result}
                 onExport={() => {
                   downloadJson(
@@ -387,6 +466,8 @@ export default function QuizPage() {
         {viewing && (
           <AnswerSheet
             title="历史记录"
+            sourceId={id}
+            structure={structure.data}
             attempt={viewing}
             onClose={() => setViewing(null)}
             onExport={() => downloadJson(`attempt-${viewing.id.slice(0, 8)}.json`, viewing)}
@@ -430,6 +511,11 @@ function QuestionInput({
       </div>
       {question.instructions && (
         <p className="text-xs text-muted-foreground">{question.instructions}</p>
+      )}
+      {question.scoring_note && (
+        <p className="rounded-md border border-warning/30 bg-warning/10 px-2 py-1 text-xs">
+          {question.scoring_note}
+        </p>
       )}
       {isChoice ? (
         <div className="space-y-1.5">
@@ -485,15 +571,21 @@ function QuestionInput({
 function AnswerSheet({
   title,
   attempt,
+  sourceId,
+  structure,
   onClose,
   onExport,
   onExportSection,
+  onRetryFailed,
 }: {
   title: string;
   attempt: Attempt;
+  sourceId?: string;
+  structure?: SourceStructure;
   onClose?: () => void;
   onExport: () => void;
   onExportSection?: (sectionTitle: string) => void;
+  onRetryFailed?: () => void;
 }) {
   const sections = useMemo(() => {
     const buckets = new Map<string, QuestionResult[]>();
@@ -523,6 +615,11 @@ function AnswerSheet({
             </div>
           </div>
           <div className="flex flex-wrap gap-2">
+            {onRetryFailed && attempt.results.some((r) => !r.correct) && (
+              <Button size="sm" variant="gradient" onClick={onRetryFailed}>
+                重做错题
+              </Button>
+            )}
             <Button size="sm" variant="outline" onClick={onExport}>
               <Download />
               导出本次记录
@@ -559,7 +656,7 @@ function AnswerSheet({
               )}
             </div>
             {rows.map((row) => (
-              <ResultRow key={row.question_id} row={row} />
+              <ResultRow key={row.question_id} row={row} sourceId={sourceId} structure={structure} />
             ))}
           </div>
         ))}
@@ -568,7 +665,29 @@ function AnswerSheet({
   );
 }
 
-function ResultRow({ row }: { row: QuestionResult }) {
+function citationHref(
+  sourceId: string | undefined,
+  chunkId: string,
+  structure?: SourceStructure
+): string | null {
+  if (!sourceId) return null;
+  const chunk = structure?.chunks.find((c) => c.id === chunkId);
+  if (!chunk) return `/sources/${sourceId}`;
+  if (chunk.start_time != null) return `/sources/${sourceId}?t=${chunk.start_time}`;
+  const page = chunk.page_number ?? chunk.printed_page;
+  if (page != null) return `/sources/${sourceId}?page=${page}`;
+  return `/sources/${sourceId}`;
+}
+
+function ResultRow({
+  row,
+  sourceId,
+  structure,
+}: {
+  row: QuestionResult;
+  sourceId?: string;
+  structure?: SourceStructure;
+}) {
   const label = QUESTION_TYPE_LABEL[row.question_type] || row.question_type;
   const isChoice = row.question_type === "choice";
   const userAnswer = isChoice
@@ -608,6 +727,27 @@ function ResultRow({ row }: { row: QuestionResult }) {
           {row.ordinal + 1}. {row.question}
         </p>
       </div>
+      {row.scoring_note && (
+        <p className="rounded-md border border-warning/30 bg-warning/10 px-2 py-1 text-xs">
+          {row.scoring_note}
+        </p>
+      )}
+      {row.chunk_ids.length > 0 && (
+        <div className="flex flex-wrap gap-1.5 text-xs">
+          {row.chunk_ids.map((chunkId) => {
+            const href = citationHref(sourceId, chunkId, structure);
+            return href ? (
+              <Link
+                key={chunkId}
+                href={href}
+                className="rounded-full bg-primary/10 px-2 py-0.5 text-primary underline-offset-4 hover:underline"
+              >
+                跳到原文
+              </Link>
+            ) : null;
+          })}
+        </div>
+      )}
       <p className="text-sm">
         <span className="text-muted-foreground">你的作答：</span>
         <span className="whitespace-pre-wrap">{userAnswer}</span>
