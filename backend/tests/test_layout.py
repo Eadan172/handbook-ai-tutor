@@ -497,6 +497,8 @@ def test_document_excerpts_sample_the_whole_book_not_just_the_front():
     assert len(sampled) >= 5
     assert max(sampled) >= 150
     assert min(sampled) <= 20
+    # Last numbered chapter must appear — not only a late ordinal via stride luck.
+    assert "第40章" in out
 
 
 # ------------------------------------------------------------------ json/blob

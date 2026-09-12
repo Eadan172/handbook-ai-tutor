@@ -23,6 +23,29 @@ class TutorReplySchema(BaseModel):
     citation_chunk_ids: list[str] = Field(default_factory=list)
 
 
+def ground_citation_ids(claimed: list[str], allowed: set[str]) -> list[str]:
+    """Keep only citation ids that were actually retrieved.
+
+    A fabricated chunk id must not survive. Order follows the model so the
+    learner sees the excerpts it said it used, not an arbitrary prefix.
+    """
+    seen: set[str] = set()
+    grounded: list[str] = []
+    for cid in claimed:
+        key = str(cid)
+        if key in allowed and key not in seen:
+            grounded.append(key)
+            seen.add(key)
+    return grounded
+
+
+_CITE_RETRY = (
+    "Your previous citation_chunk_ids were empty or included ids that are not "
+    "in the retrieved excerpts. Cite ONLY chunk_id values that appear in the "
+    "excerpts above. If you did not use a chunk, omit it. Return JSON again."
+)
+
+
 def page_hint(source: Source | None) -> tuple[int, int] | None:
     """The document's printed page range, used to sanity-check page references."""
     if source is None or source.page_offset is None or not source.page_count:
@@ -184,8 +207,24 @@ async def tutor_reply(
     )
     parsed = parse_model(result.content, TutorReplySchema)
     allowed = {str(c.chunk_id) for c in citations}
-    used_ids = [cid for cid in parsed.citation_chunk_ids if cid in allowed]
-    used = [c for c in citations if str(c.chunk_id) in used_ids] or citations[:2]
+    used_ids = ground_citation_ids(parsed.citation_chunk_ids, allowed)
+    claimed = [str(cid) for cid in parsed.citation_chunk_ids]
+    needs_retry = (not claimed) or any(cid not in allowed for cid in claimed)
+    if needs_retry:
+        retry = await router.complete(
+            task="tutor",
+            messages=[
+                ChatMessage(role="system", content=load_prompt("tutor.v2.txt")),
+                ChatMessage(role="user", content=user_prompt),
+                ChatMessage(role="assistant", content=result.content),
+                ChatMessage(role="user", content=_CITE_RETRY),
+            ],
+            user_id=user_id,
+            source_id=source_id,
+        )
+        parsed = parse_model(retry.content, TutorReplySchema)
+        used_ids = ground_citation_ids(parsed.citation_chunk_ids, allowed)
+    used = [c for c in citations if str(c.chunk_id) in set(used_ids)]
     user_row = TutorMessage(
         source_id=source_id,
         user_id=user_id,

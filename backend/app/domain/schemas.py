@@ -43,6 +43,12 @@ class SourceOut(BaseModel):
     #: printed_page - physical page_number, resolved from the running heads.
     page_offset: int | None = None
     page_count: int | None = None
+    #: Latest ingest task message: OCR / STT / mock provenance, LLM used, etc.
+    extraction_note: str | None = None
+    task_status: str | None = None
+    task_progress: int | None = None
+    task_step: str | None = None
+    task_message: str | None = None
 
     model_config = {"from_attributes": True}
 
@@ -178,6 +184,9 @@ class QuizQuestionPublic(BaseModel):
     question_type: str = "choice"
     section_title: str = ""
     instructions: str = ""
+    #: Honest scoring label. Speaking items are graded from typed text + rubric,
+    #: not from a speech-to-text vendor (this app does not add one).
+    scoring_note: str = ""
 
 
 class QuizOut(BaseModel):
@@ -188,6 +197,23 @@ class QuizOut(BaseModel):
     created_at: datetime | None = None
     sections: list[str] = Field(default_factory=list)
     questions: list[QuizQuestionPublic]
+
+
+class QuizSummaryOut(BaseModel):
+    """One generated quiz version. Regenerating creates a new row; history stays."""
+
+    id: UUID
+    source_id: UUID
+    title: str
+    prompt_version: str = "quiz_generate.v2"
+    created_at: datetime | None = None
+    question_count: int = 0
+    sections: list[str] = Field(default_factory=list)
+
+
+class QuizListOut(BaseModel):
+    source_id: UUID
+    quizzes: list[QuizSummaryOut] = Field(default_factory=list)
 
 
 class QuizAnswer(BaseModel):
@@ -201,6 +227,9 @@ class QuizAnswer(BaseModel):
 
 class QuizAttemptRequest(BaseModel):
     answers: list[QuizAnswer]
+    #: When set, only these questions are graded (wrong-question retry).
+    #: Score / pass are computed over this subset. Omitted = grade the whole quiz.
+    question_ids: list[UUID] | None = None
 
 
 class QuizQuestionResult(BaseModel):
@@ -221,6 +250,7 @@ class QuizQuestionResult(BaseModel):
     # clients & tests. Always mirrors ``ai_explanation``.
     explanation: str = ""
     chunk_ids: list[UUID] = Field(default_factory=list)
+    scoring_note: str = ""
 
 
 class QuizSectionResult(BaseModel):
@@ -363,3 +393,38 @@ class RetrieveRequest(BaseModel):
 
 class RetrieveResponse(BaseModel):
     citations: list[Citation]
+
+
+# --------------------------------------------------------------------------
+# Token usage (inspectable totals; tokens only, no invented dollar prices)
+# --------------------------------------------------------------------------
+
+
+class UsageTaskRow(BaseModel):
+    task: str
+    provider: str
+    model: str
+    calls: int = 0
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    total_tokens: int = 0
+
+
+class UsageSourceRow(BaseModel):
+    source_id: UUID | None = None
+    source_title: str | None = None
+    source_filename: str | None = None
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    total_tokens: int = 0
+    calls: int = 0
+    by_task: list[UsageTaskRow] = Field(default_factory=list)
+
+
+class UsageOut(BaseModel):
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    total_tokens: int = 0
+    calls: int = 0
+    by_source: list[UsageSourceRow] = Field(default_factory=list)
+    by_task: list[UsageTaskRow] = Field(default_factory=list)

@@ -115,9 +115,13 @@ class MockProvider(LLMProvider):
                 )
             return json.dumps({"points": points})
         if task == "quiz_generate":
+            # Honour [section=...] headers when present so coverage tests (and
+            # per-section generate) land questions on real chapter titles.
+            found_sections = re.findall(r"\[section=([^\]]+)\]", user)
+            uniq_sections = list(dict.fromkeys(s.strip() for s in found_sections if s.strip()))
             # v2 shape: sections + mixed question types
             questions = []
-            plan = [
+            default_plan = [
                 ("Section 1 — Overview", "choice"),
                 ("Section 1 — Overview", "choice"),
                 ("Section 2 — Key ideas", "choice"),
@@ -125,6 +129,20 @@ class MockProvider(LLMProvider):
                 ("Section 3 — Practice", "writing"),
                 ("Section 3 — Practice", "speaking"),
             ]
+            if uniq_sections:
+                type_cycle = ["choice", "choice", "translation", "writing", "speaking"]
+                plan = [
+                    (section, type_cycle[i % len(type_cycle)])
+                    for i, section in enumerate(uniq_sections)
+                ]
+                # Keep mixed types on a single-section call (per-section generate).
+                if len(plan) == 1:
+                    plan = [
+                        (uniq_sections[0], "choice"),
+                        (uniq_sections[0], "writing"),
+                    ]
+            else:
+                plan = default_plan
             for i, (section, qtype) in enumerate(plan):
                 row = {
                     "section_title": section,

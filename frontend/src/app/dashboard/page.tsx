@@ -20,6 +20,7 @@ import {
   X,
 } from "lucide-react";
 import { AppHeader } from "@/components/app-header";
+import { ExtractionNote } from "@/components/extraction-note";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -29,7 +30,8 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
-import { api, apiBase, useAuth } from "@/lib/api";
+import { Progress } from "@/components/ui/progress";
+import { api, apiBase, streamTaskEvents, useAuth, type TaskEvent } from "@/lib/api";
 import { formatBytes, formatTime } from "@/lib/io";
 import type { Source, SourceDeleteReport } from "@/lib/types";
 
@@ -58,6 +60,8 @@ export default function DashboardPage() {
   const [dragOver, setDragOver] = useState(false);
   const [pendingDelete, setPendingDelete] = useState<Source | null>(null);
   const [lastReport, setLastReport] = useState<SourceDeleteReport | null>(null);
+  const [liveTasks, setLiveTasks] = useState<Record<string, TaskEvent>>({});
+  const [streaming, setStreaming] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -76,9 +80,43 @@ export default function DashboardPage() {
       const rows = q.state.data;
       if (!rows || rows.length === 0) return false;
       const busy = rows.some((s) => s.status !== "ready" && s.status !== "failed");
-      return busy ? 2000 : false;
+      // Live SSE replaces the 2s poll when the stream is up.
+      return busy && !streaming ? 2000 : false;
     },
   });
+
+  const busyTaskIds = (sources.data || [])
+    .filter((s) => s.status !== "ready" && s.status !== "failed" && s.task_id)
+    .map((s) => s.task_id as string)
+    .sort()
+    .join(",");
+
+  useEffect(() => {
+    if (!token || !busyTaskIds) {
+      setStreaming(false);
+      return;
+    }
+    const ids = busyTaskIds.split(",");
+    const ac = new AbortController();
+    let active = false;
+    for (const taskId of ids) {
+      void streamTaskEvents(
+        taskId,
+        (event) => {
+          active = true;
+          setStreaming(true);
+          setLiveTasks((prev) => ({ ...prev, [event.source_id]: event }));
+          if (event.status === "succeeded" || event.status === "failed") {
+            void queryClient.invalidateQueries({ queryKey: ["sources"] });
+          }
+        },
+        ac.signal
+      ).then((result) => {
+        if (result === "failed" && !active) setStreaming(false);
+      });
+    }
+    return () => ac.abort();
+  }, [busyTaskIds, token, queryClient]);
 
   const remove = useMutation({
     mutationFn: (source: Source) =>
@@ -291,6 +329,7 @@ export default function DashboardPage() {
                   key={s.id}
                   source={s}
                   token={token}
+                  live={liveTasks[s.id]}
                   onDelete={() => setPendingDelete(s)}
                   deleting={remove.isPending}
                 />
@@ -357,11 +396,13 @@ function KpiChip({ icon, label }: { icon: React.ReactNode; label: string }) {
 function SourceCard({
   source,
   token,
+  live,
   onDelete,
   deleting,
 }: {
   source: Source;
   token: string | null;
+  live?: TaskEvent;
   onDelete: () => void;
   deleting: boolean;
 }) {
@@ -377,6 +418,10 @@ function SourceCard({
   // information the model-written title does not carry.
   const heading = source.title || source.filename;
   const subtitle = source.filename && source.filename !== heading ? source.filename : null;
+  const progress = live?.progress ?? source.task_progress;
+  const step = live?.step ?? source.task_step;
+  const note = live?.message ?? source.extraction_note ?? source.task_message;
+  const busy = source.status !== "ready" && source.status !== "failed";
   return (
     <Card interactive className="group flex h-full flex-col justify-between">
       <Link href={`/sources/${source.id}`} className="block">
@@ -408,7 +453,18 @@ function SourceCard({
           </div>
         </CardHeader>
       </Link>
-      <CardContent className="flex items-center justify-between gap-2 pt-0">
+      <CardContent className="space-y-3 pt-0">
+        {busy && (
+          <div className="space-y-1">
+            <Progress value={progress ?? 5} />
+            <p className="text-xs text-muted-foreground">
+              {step || source.status}
+              {live?.message ? ` · ${live.message}` : ""}
+            </p>
+          </div>
+        )}
+        {note && <ExtractionNote note={note} compact />}
+        <div className="flex items-center justify-between gap-2">
         <Button asChild size="sm" variant="ghost" className="text-muted-foreground">
           <a href={`${apiBase}/api/v1/sources/${source.id}/file${token ? `?token=${token}` : ""}`}>
             <ExternalLink />
@@ -425,6 +481,7 @@ function SourceCard({
           <Trash2 />
           删除
         </Button>
+        </div>
       </CardContent>
     </Card>
   );

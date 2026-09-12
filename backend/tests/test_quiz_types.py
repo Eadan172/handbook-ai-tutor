@@ -89,6 +89,11 @@ async def test_quiz_sections_and_mixed_types(client: AsyncClient) -> None:
     # answers stay hidden before submit
     assert all("correct_index" not in q for q in quiz["questions"])
 
+    speaking = [q for q in quiz["questions"] if q["question_type"] == "speaking"]
+    assert speaking
+    assert all("语音识别" in q["scoring_note"] for q in speaking)
+    assert all(q["scoring_note"] == "" for q in quiz["questions"] if q["question_type"] != "speaking")
+
 
 @pytest.mark.asyncio
 async def test_attempt_returns_full_answer_sheet_for_every_type(client: AsyncClient) -> None:
@@ -158,3 +163,49 @@ async def test_quiz_records_are_private_to_their_owner(client: AsyncClient) -> N
     intruder = await auth_header(client, email="intruder@example.com")
     assert (await client.get(f"/api/v1/sources/{source_id}/quiz/records", headers=intruder)).status_code == 404
     assert (await client.get(f"/api/v1/sources/{source_id}/quiz", headers=intruder)).status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_quiz_covers_each_major_section(client: AsyncClient) -> None:
+    headers = await auth_header(client, email="coverage@example.com")
+    async with SessionLocal() as session:
+        user = (await session.execute(select(User).where(User.email == "coverage@example.com"))).scalar_one()
+        source = Source(
+            user_id=user.id,
+            filename="book.pdf",
+            content_type="application/pdf",
+            kind="pdf",
+            storage_key="memory/coverage.pdf",
+            byte_size=1,
+            status="ready",
+            title="Long book",
+        )
+        session.add(source)
+        await session.flush()
+        sections = ["第1章 前言", "第2章 光反应", "第3章 暗反应", "第4章 应用"]
+        ordinal = 0
+        for title in sections:
+            for i in range(4):
+                text = f"{title} body paragraph {i} about the topic in this chapter."
+                session.add(
+                    DocumentChunk(
+                        source_id=source.id,
+                        user_id=user.id,
+                        ordinal=ordinal,
+                        content=text,
+                        page_number=ordinal + 1,
+                        locator=f"p.{ordinal + 1}",
+                        section_title=title,
+                        content_type="body",
+                        embedding=mock_embed_vectors([text], 32)[0],
+                    )
+                )
+                ordinal += 1
+        source_id = str(source.id)
+        await session.commit()
+
+    gen = await client.post(f"/api/v1/sources/{source_id}/quiz/generate", headers=headers)
+    assert gen.status_code == 200, gen.text
+    quiz = gen.json()
+    covered = {q["section_title"] for q in quiz["questions"]}
+    assert set(sections) <= covered, covered
