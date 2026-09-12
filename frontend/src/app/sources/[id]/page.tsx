@@ -257,7 +257,7 @@ export default function SourcePage() {
   }, [seekVideo, jumpToPage, fileUrl]);
 
   return (
-    <div className="flex h-screen flex-col overflow-hidden">
+    <div className="flex min-h-screen flex-col">
       <AppHeader />
 
       <div className="mx-auto w-full max-w-[1600px] shrink-0 px-4 pt-4">
@@ -392,7 +392,7 @@ export default function SourcePage() {
       </div>
 
       {/* Two independent panes: left = original document, right = AI notes + your notes. */}
-      <main className="mx-auto grid w-full max-w-[1600px] min-h-0 flex-1 grid-cols-1 items-stretch gap-4 px-4 py-4 lg:grid-cols-2">
+      <main className="mx-auto grid w-full max-w-[1600px] flex-1 grid-cols-1 items-start gap-4 px-4 py-4 lg:grid-cols-2">
         <SourcePreview
           ref={previewRef}
           fileUrl={fileUrl}
@@ -401,7 +401,7 @@ export default function SourcePage() {
           onError={(text) => setBanner({ kind: "err", text })}
         />
 
-        <section className="flex min-h-0 flex-col gap-4 overflow-y-auto pr-1">
+        <section className="flex max-h-[min(72vh,56rem)] min-h-[32rem] flex-col gap-4 overflow-y-auto pr-1">
           <Card>
             <CardHeader className="pb-3">
               <div className="flex items-center justify-between gap-2">
