@@ -248,13 +248,13 @@ export default function SourcePage() {
     const time = params.get("t");
     if (page) {
       const n = Number(page);
-      if (Number.isFinite(n) && n > 0) setPdfPage(n);
+      if (Number.isFinite(n) && n > 0) jumpToPage(n);
     }
     if (time) {
       const seconds = Number(time);
       if (Number.isFinite(seconds)) seekVideo(seconds);
     }
-  }, [seekVideo, fileUrl]);
+  }, [seekVideo, jumpToPage, fileUrl]);
 
   return (
     <div className="flex h-screen flex-col overflow-hidden">
