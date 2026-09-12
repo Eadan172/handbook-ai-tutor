@@ -1,0 +1,4 @@
+# cmd.exe cannot resolve CALL :label when .bat files have Unix LF endings.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.vbs text eol=crlf
