@@ -257,7 +257,17 @@ def _split_wav_sync(path: Path, chunk_seconds: float) -> list[tuple[Path, float]
 
 
 def get_stt() -> STTProvider:
-    if get_settings().stt_provider == "faster_whisper":
+    name = (get_settings().stt_provider or "mock").strip().lower()
+    # Some local trees add a SiliconFlow STT adapter. This branch is based on
+    # main without that file — use it when present, never delete the hook.
+    if name in {"siliconflow", "silicon_flow"}:
+        try:
+            from app.services.stt_siliconflow import SiliconFlowSTT  # type: ignore
+
+            return SiliconFlowSTT()
+        except ImportError:
+            pass
+    if name in {"faster_whisper", "faster-whisper"}:
         return FasterWhisperSTT()
     return MockSTT()
 

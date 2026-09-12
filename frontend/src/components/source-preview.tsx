@@ -65,8 +65,11 @@ export const SourcePreview = forwardRef<
 
   useImperativeHandle(ref, () => ({ seek, jumpToPage, jumpToCitation }), [seek, jumpToPage, jumpToCitation]);
 
+  // Definite viewport height — do not use lg:min-h-0 / flex-1-only. On the
+  // source page a failed-ingest banner ate the leftover flex space and the
+  // iframe collapsed to ~0, so the browser PDF viewer had nothing to scroll.
   return (
-    <section className="flex min-h-[28rem] min-w-0 flex-col overflow-hidden rounded-xl border bg-card lg:min-h-0">
+    <section className="flex h-[min(72vh,56rem)] min-h-[32rem] w-full min-w-0 flex-col rounded-xl border bg-card">
       <div className="flex shrink-0 items-center justify-between gap-2 border-b px-3 py-2">
         <span className="flex items-center gap-2 text-sm font-medium">
           原文
@@ -94,7 +97,7 @@ export const SourcePreview = forwardRef<
           </Button>
         </div>
       </div>
-      <div className="relative min-h-0 flex-1 bg-muted/40">
+      <div className="min-h-0 flex-1 overflow-auto bg-muted/40">
         {isVideo ? (
           <video
             ref={videoRef}
@@ -102,7 +105,7 @@ export const SourcePreview = forwardRef<
             controls
             playsInline
             preload="metadata"
-            className="absolute inset-0 h-full w-full bg-black object-contain"
+            className="h-full min-h-[28rem] w-full bg-black object-contain"
             onError={(e) =>
               onError?.(`视频无法播放：${e.currentTarget.error?.message || "浏览器拒绝了该媒体文件"}`)
             }
@@ -110,7 +113,7 @@ export const SourcePreview = forwardRef<
             你的浏览器不支持内嵌视频播放。
           </video>
         ) : kind === "image" ? (
-          <div className="absolute inset-0 overflow-auto">
+          <div className="h-full overflow-auto">
             {/* eslint-disable-next-line @next/next/no-img-element */}
             <img src={fileUrl} alt={filename || "source"} className="mx-auto block max-w-full" />
           </div>
@@ -119,7 +122,7 @@ export const SourcePreview = forwardRef<
             key={pdfUrl}
             src={pdfUrl}
             title="source-pdf"
-            className="absolute inset-0 h-full w-full border-0"
+            className="block h-full min-h-full w-full border-0"
           />
         ) : null}
       </div>
