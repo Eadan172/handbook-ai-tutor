@@ -3,21 +3,14 @@ from __future__ import annotations
 import unicodedata
 
 
+# Only multi-character sequences and Latin-1 artefacts. Single CJK characters
+# such as 璇 / 浣 / 妯 appear in real words (璇玑, 浣溪沙, 妯娌) and must not
+# trigger a recode.
 _MOJIBAKE_MARKERS = (
-    "锛",
-    "銆",
-    "鈥",
-    "鈺",
-    "妯",
-    "璺",
-    "璇",
-    "鐨",
-    "绔",
-    "馃",
-    "浣",
-    "鍙",
-    "Ã",
-    "Â",
+    "妯″",
+    "璺敱",
+    "璇婃柇",
+    "鈥?",
     "â€",
     "ï¿½",
     "\ufffd",
@@ -33,8 +26,9 @@ def normalise_text(value: str) -> str:
 
     UTF-8 decoded as GB18030 is a frequent Windows/Chinese deployment failure;
     UTF-8 decoded as Latin-1 is common in proxies. A repair is accepted only
-    when it strictly reduces known mojibake markers, so normal multilingual text
-    is left untouched.
+    when it strictly reduces known mojibake *sequences*, so normal multilingual
+    text is left untouched. Replacement characters (�) are not rewritten: the
+    original bytes are already lost.
     """
     current = unicodedata.normalize("NFC", str(value or ""))
     current_score = _mojibake_score(current)

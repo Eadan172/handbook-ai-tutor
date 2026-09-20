@@ -11,9 +11,20 @@ from app.services.pipeline import IngestPipeline
 from app.utils.text import normalise_text
 
 
-def test_common_chinese_mojibake_is_repaired_conservatively() -> None:
-    assert normalise_text("妯″瀷璺敱璇婃柇") == "模型路由诊断"
-    assert normalise_text("正常的中文 Q&A") == "正常的中文 Q&A"
+@pytest.mark.parametrize(
+    "raw, expected",
+    [
+        ("妯″瀷璺敱璇婃柇", "模型路由诊断"),
+        ("正常的中文 Q&A", "正常的中文 Q&A"),
+        ("浣溪沙与璇玑，妯娌之间", "浣溪沙与璇玑，妯娌之间"),
+        ("日本語のかなと繁體字🙂", "日本語のかなと繁體字🙂"),
+        ("already lost �", "already lost �"),
+    ],
+)
+def test_common_chinese_mojibake_is_repaired_conservatively(raw: str, expected: str) -> None:
+    repaired = normalise_text(raw)
+    assert repaired == expected
+    assert normalise_text(repaired) == repaired
 
 
 def test_env_and_prompts_are_valid_utf8() -> None:

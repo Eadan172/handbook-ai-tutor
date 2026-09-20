@@ -72,6 +72,36 @@
   2. 题目生成前增加结构化内容与人工可审核的中间结果。
   3. 异步处理适合较大的 MP4；解析完成后再开放 Quiz，避免只取得部分内容时提前出题。
 
+### 2.5 Meet-paladiya/RagVault
+
+- 仓库：https://github.com/Meet-paladiya/RagVault
+- 最近推送：**2026-09-19 10:19:34 UTC**
+- 日期证据：https://api.github.com/repos/Meet-paladiya/RagVault ；commit `05cf4f6`
+- 定位：离线 RAG 学习空间，同一知识库接入 PDF/PPT/音视频，并生成带评分的 MCQ。
+- 对本项目的借鉴：多格式汇入同一课程空间、Quiz—错题—补救笔记闭环。视频路径仍以音轨转写为主，不能替代画面 OCR。
+
+### 2.6 HKUDS/RAG-Anything
+
+- 仓库：https://github.com/HKUDS/RAG-Anything
+- 最近推送：**2026-09-15 02:37:26 UTC**
+- 日期证据：https://github.com/HKUDS/RAG-Anything/commit/1f73f0154c48b3d616674608af98748585b856f3
+- 定位：多模态 RAG 解析层（PDF/Office/图片/表格/公式，以及视频关键帧 + 音轨按时间轴合并）。
+- 对本项目的借鉴：视频“双通道”（画面关键帧与语音转写对齐）与 UTF-8 文件名处理。它不是完整学习平台，需自行叠加 Quiz 与学习状态。
+
+### 2.7 Pranav04027/bytelearnAI
+
+- 仓库：https://github.com/Pranav04027/bytelearnAI
+- 最近推送：**2026-08-22 16:36:30 UTC**
+- 日期证据：https://github.com/Pranav04027/bytelearnAI/commit/b22ae116b3f3efe281f19d9398a3d1b91af2ef23
+- 定位：视频课上传、转写、时间戳 RAG Q&A、逐课 Quiz。
+- 对本项目的借鉴：以时间区间而不是 chunk id 作为评测金标准。不覆盖 PPT/板书画面。
+
+### 2.8 日期仅部分可靠、仍值得参考的项目
+
+- [karaberke/luminrag](https://github.com/karaberke/luminrag)：`pushed_at=2026-09-18`，但默认可见表 commit 停在 2026-05-08，**不能视为主线近期更新**。设计上最接近“讲解 + PPT/板书关键帧 + 时间戳”融合。
+- [zijinz456/OpenTutor](https://github.com/zijinz456/OpenTutor)：窗口内最新 commit 是仓库健康报告，并写明连续 14 周无功能开发。产品层（多题型、FSRS）仍可参考。
+- [ZeKaiNie/universal-examprep-skill](https://github.com/ZeKaiNie/universal-examprep-skill)：2026-09-18 更新的是安装文档；中文文件名（如 `第3章_栈.pptx`）和“只从真实资料出题”策略可参考，不处理视频。
+
 ## 3. 因时间不符而未纳入主清单的项目
 
 以下项目功能相关，但 GitHub API 的 `pushed_at` 不在近一个月范围内，因此不能作为“近一个月更新项目”：
@@ -121,4 +151,7 @@
 - Study RAG Tutor：https://github.com/abinthomas9322/study-rag-tutor
 - LectureDigest：https://github.com/tridpt/LectureDigest
 - Shiksha MFE：https://github.com/tekdi/shiksha-mfe
+- RagVault：https://github.com/Meet-paladiya/RagVault
+- RAG-Anything：https://github.com/HKUDS/RAG-Anything
+- ByteLearn：https://github.com/Pranav04027/bytelearnAI
 
