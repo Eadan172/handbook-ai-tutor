@@ -11,6 +11,7 @@ from pathlib import Path
 
 from app.core.config import get_settings
 from app.core.ffmpeg import FFmpegMissing, ffmpeg_cmd, ffprobe_cmd
+from app.utils.text import normalise_text
 
 
 @dataclass
@@ -91,6 +92,47 @@ async def extract_audio(video_bytes: bytes, suffix: str = ".mp4") -> tuple[Path,
     if duration <= 0:
         duration = await probe_duration(video_path)
     return work, wav_path, duration
+
+
+async def extract_video_frames(
+    video_path: Path,
+    duration: float,
+    *,
+    max_frames: int = 24,
+    min_interval: float = 20.0,
+) -> list[tuple[float, bytes]]:
+    """Sample slide/whiteboard frames without loading the whole video in memory."""
+    if duration <= 0 or max_frames <= 0:
+        return []
+    interval = max(min_interval, duration / max_frames)
+    pattern = video_path.parent / "visual_%05d.jpg"
+    proc = await asyncio.create_subprocess_exec(
+        ffmpeg_cmd(),
+        "-y",
+        "-i",
+        str(video_path),
+        "-vf",
+        f"fps=1/{interval:.3f},scale=1280:-2",
+        "-frames:v",
+        str(max_frames),
+        "-q:v",
+        "3",
+        str(pattern),
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    _, stderr = await proc.communicate()
+    if proc.returncode != 0:
+        raise RuntimeError(
+            "FFmpeg frame extraction failed: "
+            + stderr.decode("utf-8", errors="replace")[-500:]
+        )
+    frames = sorted(video_path.parent.glob("visual_*.jpg"))
+    return [
+        (min(index * interval, duration), frame.read_bytes())
+        for index, frame in enumerate(frames)
+        if frame.stat().st_size > 0
+    ]
 
 
 class MockSTT(STTProvider):
@@ -332,7 +374,7 @@ class SiliconFlowSTT(STTProvider):
         for seg in raw_segs:
             if not isinstance(seg, dict):
                 continue
-            text = str(seg.get("text") or "").strip()
+            text = normalise_text(str(seg.get("text") or "")).strip()
             if not text:
                 continue
             out.append(
@@ -344,7 +386,7 @@ class SiliconFlowSTT(STTProvider):
             )
         if out:
             return out
-        text = str(payload.get("text") or "").strip()
+        text = normalise_text(str(payload.get("text") or "")).strip()
         if not text:
             raise RuntimeError("SiliconFlow STT empty text (not a mock lesson); check the audio.")
         return [TranscriptSegment(start=0.0, end=max(float(duration or 0.0), 0.1), text=text)]

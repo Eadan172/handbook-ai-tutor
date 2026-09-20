@@ -64,7 +64,7 @@ def export_dotenv_to_environ() -> list[str]:
     for path in ENV_FILES:
         if not path.exists():
             continue
-        for key, value in (dotenv_values(path) or {}).items():
+        for key, value in (dotenv_values(path, encoding="utf-8") or {}).items():
             if value is not None:
                 merged[key] = value
 
@@ -80,6 +80,7 @@ def export_dotenv_to_environ() -> list[str]:
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_file=tuple(str(p) for p in ENV_FILES),
+        env_file_encoding="utf-8",
         extra="ignore",
     )
 

@@ -16,6 +16,7 @@ from app.services.llm.router import ModelRouter
 from app.services.rag import get_rag
 from app.services.rag.intent import QueryIntent, parse_intent
 from app.utils.jsonutil import parse_model
+from app.utils.text import normalise_text
 
 
 class TutorReplySchema(BaseModel):
@@ -79,6 +80,7 @@ async def plan_and_retrieve(
     ranking. "第569页" therefore lands on the chunk that is page 569 rather than
     on whichever chunk happens to contain the words of the question.
     """
+    query = normalise_text(query)
     source = await _load_source(session, source_id)
     intent = parse_intent(query, page_hint=page_hint(source))
 
@@ -103,7 +105,7 @@ async def plan_and_retrieve(
             content_type=h.content_type,
             start_time=h.start_time,
             end_time=h.end_time,
-            quote=h.content,
+            quote=normalise_text(h.content),
             score=h.score,
         )
         for h in hits
@@ -231,14 +233,14 @@ async def tutor_reply(
         source_id=source_id,
         user_id=user_id,
         role="user",
-        content=message,
+        content=normalise_text(message),
         citations_json="[]",
     )
     assistant_row = TutorMessage(
         source_id=source_id,
         user_id=user_id,
         role="assistant",
-        content=parsed.reply,
+        content=normalise_text(parsed.reply),
         citations_json=json.dumps([c.model_dump(mode="json") for c in used], default=str),
     )
     session.add_all([user_row, assistant_row])
@@ -266,12 +268,14 @@ def message_to_out(row: TutorMessage):
 
     try:
         citations = [Citation.model_validate(c) for c in json.loads(row.citations_json or "[]")]
+        for citation in citations:
+            citation.quote = normalise_text(citation.quote)
     except Exception:
         citations = []
     return TutorMessageOut(
         id=row.id,
         role=row.role,
-        content=row.content,
+        content=normalise_text(row.content),
         citations=citations,
         created_at=row.created_at,
     )
