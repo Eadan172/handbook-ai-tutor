@@ -22,7 +22,7 @@ from app.utils.jsonutil import parse_json_object
 
 logger = logging.getLogger("app.quiz")
 
-QUIZ_PROMPT_VERSION = "quiz_generate.v2"
+QUIZ_PROMPT_VERSION = "quiz_generate.v3"
 EXPLAIN_PROMPT_VERSION = "quiz_explain.v2"
 
 # Per-section generate + merge only when the document is large enough that a
@@ -79,7 +79,7 @@ async def _complete_quiz(router: ModelRouter, user_id: UUID, source_id: UUID, us
     return await router.complete(
         task="quiz_generate",
         messages=[
-            ChatMessage(role="system", content=load_prompt("quiz_generate.v2.txt")),
+            ChatMessage(role="system", content=load_prompt("quiz_generate.v3.txt")),
             ChatMessage(role="user", content=user_content),
         ],
         user_id=user_id,

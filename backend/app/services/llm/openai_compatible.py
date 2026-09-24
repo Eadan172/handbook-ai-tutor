@@ -13,6 +13,7 @@ from app.services.llm.base import (
     LLMResult,
     TextPart,
 )
+from app.utils.text import normalise_text
 
 
 def _content_parts(content) -> str | list[dict]:
@@ -99,7 +100,7 @@ class OpenAICompatibleProvider(LLMProvider):
             choice = raw or ""
         usage = data.get("usage") or {}
         return LLMResult(
-            content=choice,
+            content=normalise_text(choice),
             prompt_tokens=int(usage.get("prompt_tokens") or 0),
             completion_tokens=int(usage.get("completion_tokens") or 0),
             provider=self.name,

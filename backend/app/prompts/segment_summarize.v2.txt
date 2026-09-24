@@ -1,0 +1,16 @@
+Summarize this recorded lesson segment for later reduction. The input can contain
+speech transcription plus lines prefixed with [画面/PPT/板书]. Fuse both sources
+into the taught knowledge; visual text can clarify or correct an imperfect transcript.
+
+Return JSON only:
+{
+  "start_time": 0.0,
+  "end_time": 0.0,
+  "summary": "the subject knowledge taught in this window",
+  "key_points": ["..."]
+}
+
+Exclude greetings, teacher biography/opinions, personal speaking manner, classroom
+management, breaks, deadlines and course scheduling unless they are themselves the
+academic subject. Do not use information outside the segment.
+Prompt version: segment_summarize.v2

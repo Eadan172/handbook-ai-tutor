@@ -32,8 +32,15 @@ from app.core.ffmpeg import FFmpegMissing
 from app.services.llm.router import LLMConfigError
 from app.services.progress import ProgressService
 from app.services.storage import get_storage
-from app.services.stt import extract_audio, get_stt, transcribe_audio_resilient
+from app.services.stt import (
+    TranscriptSegment,
+    extract_audio,
+    extract_video_frames,
+    get_stt,
+    transcribe_audio_resilient,
+)
 from app.utils.jsonutil import parse_json_object
+from app.utils.text import normalise_text
 
 
 class IngestError(RuntimeError):
@@ -295,7 +302,7 @@ class IngestPipeline:
             await self.progress.update(task_id, progress=25, step="stt")
             stt = get_stt()
             transcript = await transcribe_audio_resilient(stt, wav)
-            segments = transcript.segments
+            segments = list(transcript.segments)
             if not segments:
                 raise IngestError(
                     "Speech-to-text produced no segments. The recording may have no "
@@ -303,13 +310,21 @@ class IngestPipeline:
                 )
             await self.progress.update(
                 task_id,
-                progress=40,
-                step="chapters",
+                progress=34,
+                step="video_visuals",
                 message=transcript.note,
             )
+            visual_segments, visual_note = await self._video_visual_segments(
+                source, work / "source.mp4", duration
+            )
+            segments.extend(visual_segments)
+            segments.sort(key=lambda segment: (segment.start, segment.end))
+            await self.progress.update(task_id, progress=40, step="chapters")
             chapters = await self._video_chapters(source, segments, duration)
             self._record_video_structure(source, chapters, duration)
             note = transcript.note
+            if visual_note:
+                note += f" · {visual_note}"
             if chapters:
                 note += f" · {len(chapters)} chapters"
             if self.extraction_note:
@@ -318,6 +333,43 @@ class IngestPipeline:
             return chunk_segments([(s.start, s.end, s.text) for s in segments], chapters)
         finally:
             shutil.rmtree(work, ignore_errors=True)
+
+    async def _video_visual_segments(
+        self, source: Source, video_path, duration: float | None
+    ) -> tuple[list[TranscriptSegment], str]:
+        """Read sampled PPT/whiteboard frames; video ingestion remains usable if OCR is unavailable."""
+        try:
+            frames = await extract_video_frames(video_path, float(duration or 0.0))
+            if not frames:
+                return [], "no visual frames"
+            engine = get_ocr(self.router)
+            result = await engine.transcribe(
+                [(index + 1, image) for index, (_timestamp, image) in enumerate(frames)],
+                user_id=source.user_id,
+                source_id=source.id,
+            )
+        except Exception as exc:
+            return [], f"visual analysis skipped ({type(exc).__name__})"
+
+        by_page = {page.page_number: page.text.strip() for page in result.pages}
+        interval = max(1.0, float(duration or 0.0) / max(1, len(frames)))
+        segments: list[TranscriptSegment] = []
+        previous = ""
+        for index, (timestamp, _image) in enumerate(frames, 1):
+            text = by_page.get(index, "")
+            # Consecutive samples of one unchanged slide add no knowledge and
+            # would otherwise dominate retrieval and quiz generation.
+            if len(text) < 4 or text == previous:
+                continue
+            previous = text
+            segments.append(
+                TranscriptSegment(
+                    start=timestamp,
+                    end=min(float(duration or timestamp + interval), timestamp + interval),
+                    text=f"[画面/PPT/板书] {text}",
+                )
+            )
+        return segments, f"{len(segments)} visual frame(s) via {result.provider}/{result.model}"
 
     @staticmethod
     def _time_windows(segments: list, char_budget: int = 800, max_windows: int = 60) -> list[list]:
@@ -365,7 +417,7 @@ class IngestPipeline:
                     messages=[
                         ChatMessage(
                             role="system",
-                            content=load_prompt("segment_summarize.v1.txt"),
+                            content=load_prompt("segment_summarize.v2.txt"),
                         ),
                         ChatMessage(role="user", content=body),
                     ],
@@ -517,13 +569,13 @@ class IngestPipeline:
                     source_id=source.id,
                     user_id=source.user_id,
                     ordinal=i,
-                    content=chunk.content,
+                    content=normalise_text(chunk.content),
                     page_number=chunk.page_number,
                     printed_page=chunk.printed_page,
                     start_time=chunk.start_time,
                     end_time=chunk.end_time,
-                    locator=chunk.locator,
-                    section_title=chunk.section_title or None,
+                    locator=normalise_text(chunk.locator or "") or None,
+                    section_title=normalise_text(chunk.section_title or "") or None,
                     content_type=chunk.content_type,
                     heading_level=chunk.heading_level,
                 )
