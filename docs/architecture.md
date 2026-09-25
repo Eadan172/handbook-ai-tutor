@@ -68,6 +68,23 @@ Handbook AI Tutor 是一个**完全本地运行**的学习助手：把一份 PDF
 | 存储路径 / 供应商配置可在运行时改 | 存在 `backend/config/runtime.json`，页面改完即时生效、无需重启 |
 | 删除题组用「墓碑」而非直接删行 | `quiz_attempts.quiz_id` 是 NOT NULL 外键，保留题组行才能让历史成绩仍可读 |
 
+### 用户专属文件夹（User Workspace）
+
+每位账号在存储根目录下拥有一个以**用户 ID** 命名的专属文件夹：
+
+```
+<storage_root>/<user_id>/
+├── profile/account.json        账号元数据（用户 ID / 邮箱 / 注册时间）
+├── records/*.json              学习记录存档（笔记、摘要、知识点、成绩、问答、用量）
+└── resources/<source_id>/...   导入的学习资源原件（文档 / 视频 / 音频）
+```
+
+- **创建时机**：注册成功即创建；每次成功登录再幂等地跑一遍，所以手工删除或空目录清理之后会自动恢复。
+- **命名规范**：目录名用用户主键（UUID），唯一且稳定；可读身份（邮箱）记在 `profile/account.json` 里，避免邮箱字符影响路径解析。
+- **口令不进入该目录**：口令只以 bcrypt 单向哈希存在数据库 `users.hashed_password`；把哈希或明文复制一份到磁盘只会扩大泄露面，本项目不写。
+- **数据库仍是运行时唯一事实来源**；`records/` 是磁盘镜像——提交成绩时自动刷新，也可用 `POST /api/v1/system/workspace/export` 主动导出，`GET /api/v1/system/workspace` 用于查看目录形状与占用。
+- 相关实现集中在 `app/services/workspace.py`，测试见 `backend/tests/test_workspace.py`。
+
 ---
 
 ## 三、目录结构
@@ -102,7 +119,8 @@ Handbook AI Tutor 是一个**完全本地运行**的学习助手：把一份 PDF
 ├── scripts/                     # 运维与自检脚本（启动检查、样例生成、OCR 模型下载、E2E）
 ├── docs/                        # 项目文档（本文件、deferred.md）
 ├── tools/ffmpeg/bin/            # 本地 ffmpeg/ffprobe（按需下载，不入库）
-├── data/storage/                # 本地上传文件存放处（运行时生成，不入库）
+├── data/users/                  # 用户专属根目录（运行时生成，不入库）
+│                                #   <user_id>/{profile,records,resources}
 ├── test/input/                  # 自测用的样例 mp4 / pdf（不入库）
 ├── start.vbs / start.bat        # 本地启动（vbs 静默调用 bat）
 ├── stop.bat                     # 停止服务
