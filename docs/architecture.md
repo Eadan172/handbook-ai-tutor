@@ -119,7 +119,7 @@ Handbook AI Tutor 是一个**完全本地运行**的学习助手：把一份 PDF
 ├── scripts/                     # 运维与自检脚本（启动检查、样例生成、OCR 模型下载、E2E）
 ├── docs/                        # 项目文档（本文件、deferred.md）
 ├── tools/ffmpeg/bin/            # 本地 ffmpeg/ffprobe（按需下载，不入库）
-├── data/users/                  # 用户专属根目录（运行时生成，不入库）
+├── data/storage/                # 用户数据根目录（运行时生成，不入库）
 │                                #   <user_id>/{profile,records,resources}
 ├── test/input/                  # 自测用的样例 mp4 / pdf（不入库）
 ├── start.vbs / start.bat        # 本地启动（vbs 静默调用 bat）

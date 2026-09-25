@@ -108,7 +108,7 @@ class Settings(BaseSettings):
     # <root>/<user_id>/{profile,records,resources} without anyone having to edit
     # a file. Uploaded originals live in that account's resources/ sub-folder.
     # The settings page can re-point it per deployment (see runtime_paths.py).
-    local_storage_path: str = str(REPO_ROOT / "data" / "users")
+    local_storage_path: str = str(REPO_ROOT / "data" / "storage")
 
     rag_provider: str = "llamaindex"  # llamaindex | pgvector
     embedding_dim: int = 1024
@@ -151,7 +151,7 @@ class Settings(BaseSettings):
         """
         raw = (value or "").strip()
         if not raw:
-            return str(REPO_ROOT / "data" / "users")
+            return str(REPO_ROOT / "data" / "storage")
         path = Path(raw).expanduser()
         if not path.is_absolute():
             return str((REPO_ROOT / path.as_posix().lstrip("/\\")).resolve())

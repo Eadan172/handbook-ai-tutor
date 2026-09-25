@@ -102,7 +102,7 @@ def project_defaults() -> dict[str, str]:
     of the box and the UI has something concrete to pre-fill.
     """
     return {
-        "local_storage_path": str((REPO_ROOT / "data" / "users").resolve()),
+        "local_storage_path": str((REPO_ROOT / "data" / "storage").resolve()),
         "providers_config_path": str((BACKEND_DIR / "config" / "providers.yaml").resolve()),
     }
 
